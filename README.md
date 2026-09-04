@@ -303,18 +303,22 @@ Built-in profiles currently cover Visual Studio Code and Floodtide. General bund
 
 ```text
 src/
-├── apps.ts            application discovery and identity
-├── cli.ts             command routing and interactive flows
-├── command.ts         shell-free Bun.spawn command runner
-├── manifest-store.ts  atomic session persistence
-├── processes.ts       quit and process handling
-├── quarantine.ts      quarantine, restore, and purge transactions
-├── rules.ts           built-in and user rule validation
-├── safety.ts          path and mutation boundaries
-├── scanner.ts         layered discovery and classification
-├── system-paths.ts    approved local macOS roots
-├── types.ts           public domain types and JSON contracts
-└── ui.ts              color, layout, status, and terminal presentation
+├── app-policy.ts       canonical Apple/bundle/display/keychain policy
+├── apps.ts             application discovery and identity
+├── cli.ts              thin routing plus runCli/default deps
+├── cli-helpers.ts      shared CLI parsing, confirmations, and selection
+├── command.ts          shell-free Bun.spawn command runner
+├── interactive.ts      guided interactive flow
+├── manifest-store.ts   atomic session persistence
+├── processes.ts        verified process matching and quit handling
+├── quarantine.ts       quarantine, restore, and purge transactions
+├── rules.ts            built-in and user rule validation
+├── safety.ts           path and mutation boundaries
+├── scanner.ts          layered discovery and classification
+├── system-paths.ts     approved local macOS roots
+├── types.ts            public domain types and JSON contracts
+├── ui.ts               color, layout, status, and terminal presentation
+└── version.ts          single application version source
 ```
 
 All external commands use argument arrays through `Bun.spawn({ cmd: [...] })`. User input is never interpolated into a shell command.
@@ -325,10 +329,11 @@ All external commands use argument arrays through `Bun.spawn({ cmd: [...] })`. U
 bun install
 bun run check
 bun test
+bun run bench
 bun run build
 ```
 
-The suite uses temporary fake macOS roots and command-runner doubles. It does not uninstall real applications. Current coverage includes:
+The suite uses temporary fake macOS roots and command-runner doubles. It does not uninstall real applications. `bun run bench` measures scan wall time and per-command cost on a synthetic tree without changing scan behavior. Current coverage includes:
 
 - ambiguous selectors and multiple same-name applications
 - VS Code-style data, extensions, CLI links, and updater files
