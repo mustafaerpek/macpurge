@@ -7,7 +7,7 @@
 Find the files an app leaves behind, review the evidence, and move verified items into quarantine before anything is permanently removed.
 
 [![macOS](https://img.shields.io/badge/macOS_27-Apple_Silicon-111827?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
-[![Bun](https://img.shields.io/badge/Bun_1.4-TypeScript-f9f1e1?style=for-the-badge&logo=bun&logoColor=111827)](https://bun.sh/)
+[![Bun](https://img.shields.io/badge/Bun_1.4.1+-TypeScript-f9f1e1?style=for-the-badge&logo=bun&logoColor=111827)](https://bun.sh/)
 [![Local only](https://img.shields.io/badge/Privacy-local_only-06b6d4?style=for-the-badge)](#privacy)
 [![Safety](https://img.shields.io/badge/Default-reversible-a855f7?style=for-the-badge)](#safety-model)
 [![License](https://img.shields.io/badge/License-MIT-4ade80?style=for-the-badge)](LICENSE)
@@ -51,7 +51,7 @@ macpurge combines deep discovery with a deliberately conservative mutation model
 
 - Apple Silicon Mac
 - macOS 27
-- [Bun 1.4](https://bun.sh/)
+- [Bun 1.4.1 or later](https://bun.sh/)
 - Standard macOS command-line utilities used by `macpurge doctor`
 
 The current release is intentionally built and tested for one local Apple Silicon configuration. Other macOS versions and Intel Macs are not yet supported targets.

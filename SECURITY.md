@@ -25,4 +25,4 @@ These controls reduce risk but do not make destructive software risk-free. Revie
 
 ## Supported environment
 
-Security testing currently targets Apple Silicon and macOS 27 with Bun 1.4. Reports from other environments are welcome, but those environments are not yet supported targets.
+Security testing currently targets Apple Silicon and macOS 27 with Bun 1.4.1 or later. Reports from other environments are welcome, but those environments are not yet supported targets.
