@@ -57,9 +57,10 @@ export class FakeCommandRunner implements CommandRunner {
       match: (command: readonly string[]) => boolean;
       result: CommandResult;
     }> = [],
+    private readonly installed: ReadonlySet<string> = new Set(),
   ) {}
 
-  async run(command: readonly string[]): Promise<CommandResult> {
+  async run(command: readonly string[], _options?: RunOptions): Promise<CommandResult> {
     this.calls.push([...command]);
     return this.responses.find((entry) => entry.match(command))?.result ?? {
       exitCode: 127,
@@ -69,6 +70,11 @@ export class FakeCommandRunner implements CommandRunner {
   }
 
   async exists(command: string): Promise<boolean> {
-    return this.responses.some((entry) => entry.match([command]));
+    // Models `which <command>`: explicit installed set wins, otherwise honor a
+    // mocked `/usr/bin/which` response so fakes stay behaviorally representative.
+    if (this.installed.size > 0) return this.installed.has(command);
+    const which = this.responses.find((entry) => entry.match(["/usr/bin/which", command]));
+    if (which) return which.result.exitCode === 0;
+    return false;
   }
 }
