@@ -10,6 +10,7 @@ Find the files an app leaves behind, review the evidence, and move verified item
 [![Bun](https://img.shields.io/badge/Bun_1.4-TypeScript-f9f1e1?style=for-the-badge&logo=bun&logoColor=111827)](https://bun.sh/)
 [![Local only](https://img.shields.io/badge/Privacy-local_only-06b6d4?style=for-the-badge)](#privacy)
 [![Safety](https://img.shields.io/badge/Default-reversible-a855f7?style=for-the-badge)](#safety-model)
+[![License](https://img.shields.io/badge/License-MIT-4ade80?style=for-the-badge)](LICENSE)
 
 <img src="docs/terminal-preview.svg" alt="macpurge terminal scan showing confirmed, review, and protected files" width="920">
 
@@ -369,6 +370,10 @@ Review the manifest and restore the successfully moved files. macpurge blocks pe
 ## Inspiration
 
 The terminal presentation was inspired by the clarity and energy of [Mole](https://github.com/tw93/Mole). macpurge is an independent TypeScript implementation focused specifically on evidence-based application removal, reversible quarantine, and explicit permanent cleanup.
+
+## License
+
+macpurge is available under the [MIT License](LICENSE). You may use, modify, distribute, and include it in commercial or private projects as long as the copyright and license notice are preserved. The software is provided without warranty.
 
 ## Disclaimer
 
