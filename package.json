@@ -11,6 +11,7 @@
     "start": "bun src/cli.ts",
     "check": "tsc --noEmit",
     "test": "bun test",
+    "bench": "bun scripts/bench-scan.ts",
     "build": "bun scripts/build.ts"
   },
   "dependencies": {
