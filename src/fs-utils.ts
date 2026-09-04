@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Candidate, CandidateKind, Evidence, RiskClass } from "./types";
 import { parentNeedsAdmin } from "./safety";

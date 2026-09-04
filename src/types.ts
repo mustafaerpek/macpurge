@@ -100,16 +100,6 @@ export interface ScanResult {
   errors: string[];
 }
 
-export interface ActionResult {
-  schemaVersion: typeof SCHEMA_VERSION;
-  status: SessionStatus | "clean" | "found" | "ok" | "error";
-  app?: AppIdentity;
-  sessionId?: string;
-  candidates?: Candidate[];
-  warnings: string[];
-  errors: string[];
-}
-
 export interface RuleCandidate {
   pathTemplate: string;
   match?: "exact" | "prefix";
