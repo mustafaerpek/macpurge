@@ -1,0 +1,23 @@
+{
+  "name": "macpurge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "macpurge": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun scripts/build.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "latest",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
