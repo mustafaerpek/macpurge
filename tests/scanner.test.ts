@@ -9,14 +9,24 @@ import { testPaths } from "./helpers";
 class ScannerRunner implements CommandRunner {
   constructor(
     private readonly findOutput: string[] = [],
-    private readonly options: { keychainServices?: string[]; loginItems?: string[]; backgroundBundleId?: string } = {},
+    private readonly options: { keychainServices?: string[]; loginItems?: string[]; backgroundBundleId?: string; pgrepOutput?: string } = {},
   ) {}
 
   async run(command: readonly string[]): Promise<CommandResult> {
     if (command[0] === "/usr/bin/find") return { exitCode: 0, stdout: `${this.findOutput.join("\n")}\n`, stderr: "" };
     if (command[0] === "/usr/bin/du") return { exitCode: 0, stdout: `1\t${command.at(-1)}\n`, stderr: "" };
     if (command[0] === "/usr/bin/mdfind") return { exitCode: 0, stdout: "", stderr: "" };
-    if (command[0] === "/usr/bin/osascript") return { exitCode: 0, stdout: `${(this.options.loginItems ?? ["Other App", "Raycast"]).join(", ")}\n`, stderr: "" };
+    if (command[0] === "/usr/bin/pgrep") return { exitCode: this.options.pgrepOutput ? 0 : 1, stdout: this.options.pgrepOutput ?? "", stderr: "" };
+    if (command[0] === "/usr/bin/osascript") {
+      const script = command.at(-1) ?? "";
+      const items = this.options.loginItems ?? ["Other App", "Raycast"];
+      for (const item of items) {
+        if (script === `tell application "System Events" to exists login item "${item.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\r", "\\r")}"`) {
+          return { exitCode: 0, stdout: "true\n", stderr: "" };
+        }
+      }
+      return { exitCode: 0, stdout: "false\n", stderr: "" };
+    }
     if (command[0] === "/usr/bin/security") {
       const found = (this.options.keychainServices ?? []).includes(command.at(-1) ?? "");
       return { exitCode: found ? 0 : 44, stdout: "", stderr: found ? "" : "not found" };
@@ -106,5 +116,20 @@ describe("application scanner", () => {
     const scan = await scanApplication(app, paths, new ScannerRunner([cache]), true);
     expect(scan.candidates.length).toBeGreaterThan(0);
     expect(scan.candidates.every((candidate) => candidate.risk === "protected")).toBeTrue();
+  });
+
+  test("detects login items with commas via exact-match queries", async () => {
+    const paths = await testPaths();
+    const appPath = join(paths.applications, "Comma App.app");
+    await mkdir(appPath, { recursive: true });
+    const app: AppIdentity = {
+      displayName: "Comma, App",
+      bundleId: "com.example.comma",
+      path: appPath,
+      installSource: "standalone",
+      packageReceipts: [],
+    };
+    const scan = await scanApplication(app, paths, new ScannerRunner([], { loginItems: ["Comma, App"] }), true);
+    expect(scan.deferredActions.some((action) => action.type === "login-item" && action.value === "Comma, App")).toBeTrue();
   });
 });

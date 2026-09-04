@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { CommandRunner } from "./command";
 import { inferKind, makeCandidate } from "./fs-utils";
 import { isWithin } from "./safety";
-import { applicationPids } from "./processes";
+import { applicationPids, loginItemExists } from "./processes";
 import { expandRulePath, loadRules, rulesForApp } from "./rules";
 import {
   SCHEMA_VERSION,
@@ -228,10 +228,8 @@ async function deferredActions(app: AppIdentity, runner: CommandRunner): Promise
     const result = await runner.run(["/usr/bin/security", "find-generic-password", "-s", service]);
     if (result.exitCode === 0) actions.push({ type: "keychain", value: service, description: `Delete Keychain service ${service}`, requiresAdmin: false });
   }
-  const loginItems = await runner.run(["/usr/bin/osascript", "-e", "tell application \"System Events\" to get the name of every login item"]);
-  const installedLoginItems = loginItems.stdout.split(",").map((name) => name.trim());
   for (const name of new Set([app.displayName, basename(app.path, ".app")])) {
-    if (loginItems.exitCode === 0 && installedLoginItems.includes(name)) {
+    if (await loginItemExists(name, runner)) {
       actions.push({ type: "login-item", value: name, description: `Delete login item ${name}`, requiresAdmin: false });
     }
   }

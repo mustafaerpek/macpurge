@@ -167,6 +167,8 @@ export class QuarantineService {
       case "login-item":
         command = ["/usr/bin/osascript", "-e", loginItemDeleteScript(action.value)];
         break;
+      default:
+        throw new SafetyError(`Unknown deferred action type: ${JSON.stringify((action as DeferredAction).type)}`);
     }
     const result = await this.runner.run(command, { interactive: action.requiresAdmin });
     return result.exitCode === 0 ? undefined : `${action.description} failed with exit code ${result.exitCode}`;

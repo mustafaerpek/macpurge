@@ -154,4 +154,23 @@ describe("quarantine transactions", () => {
     await writeFile(manifestPath, JSON.stringify(tampered));
     await expect(service.purge(manifest.id)).rejects.toThrow("does not match");
   });
+
+  test("rejects unknown deferred action types on load", async () => {
+    const { paths, service, app, candidates } = await fixture();
+    const manifest = await service.quarantine(app, candidates, [
+      { type: "tcc", value: app.bundleId, description: "Reset TCC", requiresAdmin: false },
+    ]);
+    const manifestPath = join(paths.sessionRoot, `${manifest.id}.json`);
+    const tampered = JSON.parse(await readFile(manifestPath, "utf8")) as typeof manifest;
+    (tampered.deferredActions[0] as unknown as { type: string }).type = "unknown-action";
+    await writeFile(manifestPath, JSON.stringify(tampered));
+    await expect(service.purge(manifest.id)).rejects.toThrow("Unknown deferred action");
+  });
+
+  test("fails explicitly when runDeferred receives an unknown action", async () => {
+    const { paths } = await fixture();
+    const service = new QuarantineService(paths, new RecordingRunner());
+    const unknown = { type: "unknown-action", value: "x", description: "Unknown", requiresAdmin: false } as never;
+    await expect((service as unknown as { runDeferred: (a: never) => Promise<string | undefined> }).runDeferred(unknown)).rejects.toThrow("Unknown deferred action");
+  });
 });
