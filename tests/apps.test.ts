@@ -92,7 +92,7 @@ describe("application discovery", () => {
       { receipts: ["com.vendor.first.pkg"] },
     );
     expect((await readAppIdentity(first, paths, runner)).installSource).toBe("pkg");
-    expect(selectApplication("Shared Name", paths, runner)).rejects.toThrow("ambiguous");
+    await expect(selectApplication("Shared Name", paths, runner)).rejects.toThrow("ambiguous");
   });
 
   test("rejects explicit applications outside supported roots", async () => {
@@ -100,6 +100,6 @@ describe("application discovery", () => {
     const outside = join(paths.home, "Desktop", "Outside.app");
     await fakeApp(outside);
     const runner = new IdentityRunner({ Outside: { CFBundleIdentifier: "com.example.outside", CFBundleDisplayName: "Outside" } });
-    expect(readAppIdentity(outside, paths, runner)).rejects.toThrow("outside supported");
+    await expect(readAppIdentity(outside, paths, runner)).rejects.toThrow("outside supported");
   });
 });

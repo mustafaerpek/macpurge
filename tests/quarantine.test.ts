@@ -95,7 +95,7 @@ describe("quarantine transactions", () => {
   test("rejects protected candidates at the service boundary", async () => {
     const { service, app, candidates } = await fixture();
     const protectedCandidate = { ...candidates[0]!, risk: "protected" as const, selectedByDefault: false };
-    expect(service.quarantine(app, [protectedCandidate], [])).rejects.toThrow("Protected candidates");
+    await expect(service.quarantine(app, [protectedCandidate], [])).rejects.toThrow("Protected candidates");
   });
 
   test("defers irreversible actions until purge", async () => {
@@ -126,7 +126,7 @@ describe("quarantine transactions", () => {
     const manifest = await service.quarantine(app, candidates, []);
     expect(manifest.status).toBe("partial");
     expect(manifest.items.some((item) => item.status === "failed")).toBeTrue();
-    expect(service.purge(manifest.id)).rejects.toThrow("unmoved items");
+    await expect(service.purge(manifest.id)).rejects.toThrow("unmoved items");
   });
 
   test("keeps quarantine payload when Homebrew cleanup fails", async () => {
@@ -152,6 +152,6 @@ describe("quarantine transactions", () => {
     const tampered = JSON.parse(await readFile(manifestPath, "utf8")) as typeof manifest;
     tampered.deferredActions[0]!.value = "com.example.other";
     await writeFile(manifestPath, JSON.stringify(tampered));
-    expect(service.purge(manifest.id)).rejects.toThrow("does not match");
+    await expect(service.purge(manifest.id)).rejects.toThrow("does not match");
   });
 });
