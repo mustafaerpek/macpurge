@@ -16,7 +16,6 @@ export async function interactive(deps: CliDeps): Promise<number> {
   const selectedPath = await autocomplete({
     message: "Search for an application",
     placeholder: "Type an app name…",
-    maxItems: 8,
     options: apps.map((app) => ({
       value: app.path,
       label: appChoiceLabel(app),
