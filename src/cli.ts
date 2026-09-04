@@ -17,6 +17,8 @@ import {
 import { BunCommandRunner } from "./command";
 import { listApplications, selectApplication } from "./apps";
 import { humanBytes } from "./fs-utils";
+import { isProtectedAppleApp } from "./app-policy";
+import { APP_VERSION } from "./version";
 import { loadRules, rulesForApp } from "./rules";
 import { scanApplication } from "./scanner";
 import { defaultSystemPaths } from "./system-paths";
@@ -160,7 +162,7 @@ async function commandUninstall(parsed: Parsed): Promise<number> {
   if (!selector) throw new CliError("uninstall requires an application selector", 2);
   const rich = parsed.values.json !== true;
   const app = await activity("Resolving application identity", "Application identified", rich, () => selectApplication(selector, paths, runner));
-  if (app.bundleId.startsWith("com.apple.")) throw new CliError("Apple system applications are protected and cannot be uninstalled", 2);
+  if (isProtectedAppleApp(app)) throw new CliError("Apple system applications are protected and cannot be uninstalled", 2);
   const scan = await activity("Building a safe removal plan", "Removal plan ready", rich, () => scanApplication(app, paths, runner, parsed.values["no-deep"] !== true));
   const selected = selectedCandidates(scan, parsed.values.include ?? []);
   if (selected.length === 0) throw new CliError("No confirmed candidates were found", 5);
@@ -325,7 +327,7 @@ async function interactive(): Promise<number> {
       value: app.path,
       label: appChoiceLabel(app),
       hint: appChoiceHint(app),
-      ...(app.bundleId.startsWith("com.apple.") ? { disabled: true } : {}),
+      ...(isProtectedAppleApp(app) ? { disabled: true } : {}),
     })),
   });
   if (isCancel(selectedPath)) {
@@ -376,7 +378,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (parsed.values.version) {
-    console.log("0.2.0");
+    console.log(APP_VERSION);
     return 0;
   }
   const command = parsed.positionals[0];

@@ -1,9 +1,10 @@
 import pc from "picocolors";
 import { basename } from "node:path";
 import { humanBytes } from "./fs-utils";
+import { isProtectedAppleApp } from "./app-policy";
+import { APP_VERSION } from "./version";
 import type { AppIdentity, Candidate, DeferredAction, InstallSource, ScanResult, SessionManifest } from "./types";
 
-const VERSION = "0.2.0";
 const MIN_WIDTH = 62;
 const MAX_WIDTH = 96;
 
@@ -46,15 +47,29 @@ function riskVisual(risk: Candidate["risk"]): { icon: string; label: string } {
 }
 
 function statusVisual(status: SessionManifest["status"] | "clean" | "found" | "ok" | "error"): string {
-  if (["quarantined", "restored", "purged", "clean", "ok"].includes(status)) return pc.green(`● ${status.toUpperCase()}`);
-  if (["partial", "found", "planned", "quarantining", "purging"].includes(status)) return pc.yellow(`◐ ${status.toUpperCase()}`);
-  return pc.red(`● ${status.toUpperCase()}`);
+  switch (status) {
+    case "quarantined":
+    case "restored":
+    case "purged":
+    case "clean":
+    case "ok":
+      return pc.green(`● ${status.toUpperCase()}`);
+    case "partial":
+    case "found":
+    case "planned":
+    case "quarantining":
+    case "purging":
+      return pc.yellow(`◐ ${status.toUpperCase()}`);
+    case "failed":
+    case "error":
+      return pc.red(`● ${status.toUpperCase()}`);
+  }
 }
 
 export function printBanner(tagline = "Safe removal. Reversible by default."): void {
   const inner = width() - 4;
   const title = "◆ MACPURGE";
-  const version = `v${VERSION}`;
+  const version = `v${APP_VERSION}`;
   const gap = Math.max(1, inner - title.length - version.length);
   console.log(pc.cyan(`╭${border()}╮`));
   console.log(`${pc.cyan("│")} ${pc.bold(pc.cyan("◆ MAC"))}${pc.bold(pc.magenta("PURGE"))}${" ".repeat(gap)}${pc.dim(version)} ${pc.cyan("│")}`);
@@ -149,7 +164,7 @@ export function printApplicationList(apps: AppIdentity[]): void {
   printBanner(`${apps.length} applications discovered on this Mac.`);
   printSection("Applications", "name · version · source");
   for (const app of apps) {
-    const protectedApp = app.bundleId.startsWith("com.apple.");
+    const protectedApp = isProtectedAppleApp(app);
     const icon = protectedApp ? pc.dim("○") : pc.cyan("●");
     const name = pad(shorten(app.displayName, 30), 30);
     const version = pad(shorten(app.version ?? "—", 12), 12);
@@ -239,11 +254,11 @@ export function printHelp(): void {
 }
 
 export function appChoiceLabel(app: AppIdentity): string {
-  return app.bundleId.startsWith("com.apple.") ? pc.dim(app.displayName) : pc.bold(app.displayName);
+  return isProtectedAppleApp(app) ? pc.dim(app.displayName) : pc.bold(app.displayName);
 }
 
 export function appChoiceHint(app: AppIdentity): string {
-  return `${app.version ?? "version unknown"} · ${sourceLabel(app.installSource)}${app.bundleId.startsWith("com.apple.") ? " · protected" : ""}`;
+  return `${app.version ?? "version unknown"} · ${sourceLabel(app.installSource)}${isProtectedAppleApp(app) ? " · protected" : ""}`;
 }
 
 export function sessionOutro(manifest: SessionManifest): string {

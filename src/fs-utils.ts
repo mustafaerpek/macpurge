@@ -33,6 +33,20 @@ export async function makeCandidate(input: {
   evidence: Evidence[];
   runner: CommandRunner;
 }): Promise<Candidate | undefined> {
+  const protectedCandidate = (
+    detail: string,
+    extra?: Pick<Candidate, "owner" | "group" | "mode">,
+  ): Candidate => ({
+    id: candidateId(input.path, input.kind),
+    path: input.path,
+    kind: input.kind,
+    risk: "protected",
+    evidence: [...input.evidence, { source: "standard-path", detail }],
+    sizeBytes: 0,
+    ...extra,
+    requiresAdmin: true,
+    selectedByDefault: false,
+  });
   let info;
   try {
     info = await lstat(input.path);
@@ -40,16 +54,7 @@ export async function makeCandidate(input: {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return undefined;
     if (code === "EACCES" || code === "EPERM") {
-      return {
-        id: candidateId(input.path, input.kind),
-        path: input.path,
-        kind: input.kind,
-        risk: "protected",
-        evidence: [...input.evidence, { source: "standard-path", detail: `Inaccessible without additional system permission (${code})` }],
-        sizeBytes: 0,
-        requiresAdmin: true,
-        selectedByDefault: false,
-      };
+      return protectedCandidate(`Inaccessible without additional system permission (${code})`);
     }
     throw error;
   }
@@ -59,19 +64,11 @@ export async function makeCandidate(input: {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM") {
-      return {
-        id: candidateId(input.path, input.kind),
-        path: input.path,
-        kind: input.kind,
-        risk: "protected",
-        evidence: [...input.evidence, { source: "standard-path", detail: `Target cannot be resolved safely (${code})` }],
-        sizeBytes: 0,
+      return protectedCandidate(`Target cannot be resolved safely (${code})`, {
         owner: String(info.uid),
         group: String(info.gid),
         mode: (info.mode & 0o7777).toString(8),
-        requiresAdmin: true,
-        selectedByDefault: false,
-      };
+      });
     }
     throw error;
   }

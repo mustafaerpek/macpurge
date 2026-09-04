@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { APP_VERSION } from "../src/version";
 
 const cli = resolve(import.meta.dir, "..", "src", "cli.ts");
 
@@ -22,7 +23,7 @@ describe("CLI contract", () => {
   test("prints version and help", async () => {
     const version = await run(["--version"]);
     expect(version.exitCode).toBe(0);
-    expect(version.stdout.trim()).toBe("0.2.0");
+    expect(version.stdout.trim()).toBe(APP_VERSION);
     const help = await run(["--help"]);
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain("macpurge uninstall");

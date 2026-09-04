@@ -41,23 +41,33 @@ export function allowedRoots(paths: SystemPaths): string[] {
   ].map((path) => resolve(path));
 }
 
+export function personalProtectedRoots(paths: SystemPaths): string[] {
+  return [
+    resolve(paths.home, "Documents"),
+    resolve(paths.home, "Desktop"),
+    resolve(paths.home, "Downloads"),
+    resolve(paths.systemLibrary, "Developer"),
+  ];
+}
+
+export function isPersonalProtectedPath(path: string, paths: SystemPaths): boolean {
+  const resolved = resolve(path);
+  return personalProtectedRoots(paths).some((root) => isWithin(resolved, root));
+}
+
 export function validateLiteralPath(input: string, paths: SystemPaths): string {
   if (!input || input.includes("\0")) throw new SafetyError("Path is empty or contains a null byte");
   if (!isAbsolute(input)) throw new SafetyError(`Path is not absolute: ${input}`);
   if (/[*?\[\]{}]/u.test(input)) throw new SafetyError(`Wildcards are not allowed in mutation paths: ${input}`);
 
   const normalized = normalize(input);
+  // Intentionally inspect the literal input segments (not the normalized form)
+  // so traversal syntax itself is rejected even when it would canonicalize inside.
   if (input.split(sep).includes("..")) throw new SafetyError(`Parent traversal is not allowed: ${input}`);
   if (protectedRoots(paths).includes(resolve(normalized))) {
     throw new SafetyError(`Protected root cannot be mutated: ${input}`);
   }
-  const protectedAreas = [
-    resolve(paths.home, "Documents"),
-    resolve(paths.home, "Desktop"),
-    resolve(paths.home, "Downloads"),
-    resolve(paths.systemLibrary, "Developer"),
-  ];
-  if (protectedAreas.some((root) => isWithin(normalized, root))) {
+  if (isPersonalProtectedPath(normalized, paths)) {
     throw new SafetyError(`Personal or developer data is protected: ${input}`);
   }
   if (!allowedRoots(paths).some((root) => isWithin(normalized, root))) {
@@ -68,6 +78,8 @@ export function validateLiteralPath(input: string, paths: SystemPaths): string {
 
 export async function revalidateCandidate(candidate: Candidate, paths: SystemPaths): Promise<string> {
   const literal = validateLiteralPath(candidate.path, paths);
+  // lstat inspects the link object itself (does not follow); realpath below
+  // resolves the final target so symlink drift can be detected.
   await lstat(literal);
   const resolved = await realpath(literal);
 

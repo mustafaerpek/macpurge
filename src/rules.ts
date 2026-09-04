@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { SCHEMA_VERSION, type AppIdentity, type RuleCandidate, type RuleProfile, type SystemPaths } from "./types";
 import { protectedRoots, SafetyError, validateLiteralPath } from "./safety";
+import { isValidBundleId, isValidDisplayName } from "./app-policy";
 
 export const BUILTIN_RULES: RuleProfile[] = [
   {
@@ -77,10 +78,10 @@ function validateRuleCandidate(candidate: RuleCandidate, paths: SystemPaths): vo
 }
 
 export function expandRulePath(template: string, app: AppIdentity, paths: SystemPaths): string {
-  if (/[\/\0]/u.test(app.displayName) || app.displayName === "." || app.displayName === "..") {
+  if (!isValidDisplayName(app.displayName)) {
     throw new SafetyError("Application display name is unsafe for rule expansion");
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/u.test(app.bundleId) || app.bundleId.includes("..")) {
+  if (!isValidBundleId(app.bundleId)) {
     throw new SafetyError("Application bundle id is unsafe for rule expansion");
   }
   return template

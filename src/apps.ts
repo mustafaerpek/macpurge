@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import type { AppIdentity, InstallSource, SystemPaths } from "./types";
 import type { CommandRunner } from "./command";
 import { appBaseName, pathExists } from "./fs-utils";
+import { isValidBundleId, isValidDisplayName } from "./app-policy";
 
 export class AppSelectionError extends Error {
   override name = "AppSelectionError";
@@ -76,13 +77,15 @@ async function relatedReceipts(bundleId: string, displayName: string, runner: Co
 }
 
 async function discoverAppPaths(root: string, depth = 0): Promise<string[]> {
-  if (!(await pathExists(root)) || depth > 2) return [];
+  const MAX_WALK_DEPTH = 2;
+  const MAX_NEST_LEVEL = 1;
+  if (!(await pathExists(root)) || depth > MAX_WALK_DEPTH) return [];
   const entries = await readdir(root, { withFileTypes: true });
   const result: string[] = [];
   for (const entry of entries) {
     const path = join(root, entry.name);
     if (entry.name.toLowerCase().endsWith(".app") && (entry.isDirectory() || entry.isSymbolicLink())) result.push(path);
-    else if (entry.isDirectory() && depth < 1) result.push(...(await discoverAppPaths(path, depth + 1)));
+    else if (entry.isDirectory() && depth < MAX_NEST_LEVEL) result.push(...(await discoverAppPaths(path, depth + 1)));
   }
   return result;
 }
@@ -102,8 +105,8 @@ export async function readAppIdentity(path: string, paths: SystemPaths, runner: 
     (await plistValue(infoPlist, "CFBundleDisplayName", runner)) ??
     (await plistValue(infoPlist, "CFBundleName", runner)) ??
     appBaseName(path);
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/u.test(bundleId) || bundleId.includes("..")) throw new AppSelectionError(`Application has an unsafe bundle identifier: ${bundleId}`);
-  if (/[\/\0]/u.test(displayName) || displayName === "." || displayName === "..") throw new AppSelectionError(`Application has an unsafe display name: ${displayName}`);
+  if (!isValidBundleId(bundleId)) throw new AppSelectionError(`Application has an unsafe bundle identifier: ${bundleId}`);
+  if (!isValidDisplayName(displayName)) throw new AppSelectionError(`Application has an unsafe display name: ${displayName}`);
   const version = await plistValue(infoPlist, "CFBundleShortVersionString", runner);
 
   const signature = await runner.run(["/usr/bin/codesign", "-dv", "--verbose=4", requestedPath]);
@@ -147,8 +150,9 @@ export async function listApplications(paths: SystemPaths, runner: CommandRunner
   for (const path of [...found].sort()) {
     try {
       apps.push(await readAppIdentity(path, paths, runner));
-    } catch {
+    } catch (error) {
       // Invalid bundles are intentionally omitted from the selectable list.
+      if (process.env.MACPURGE_DEBUG) console.warn(`Skipping invalid bundle ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return apps.sort((a, b) => a.displayName.localeCompare(b.displayName));

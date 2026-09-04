@@ -2,7 +2,8 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { CommandRunner } from "./command";
 import { inferKind, makeCandidate } from "./fs-utils";
-import { isWithin } from "./safety";
+import { isPersonalProtectedPath, isWithin } from "./safety";
+import { candidateKeychainServices, isProtectedAppleApp } from "./app-policy";
 import { applicationPids, loginItemExists } from "./processes";
 import { expandRulePath, loadRules, rulesForApp } from "./rules";
 import {
@@ -16,7 +17,13 @@ import {
   type SystemPaths,
 } from "./types";
 
-const RISK_WEIGHT: Record<RiskClass, number> = { possible: 1, confirmed: 2, protected: 3 };
+const RISK_ORDER: Record<RiskClass, number> = { confirmed: 0, possible: 1, protected: 2 };
+
+const MAX_SPOTLIGHT_RESULTS = 500;
+const MAX_DEEP_RESULTS = 500;
+const FIND_MAXDEPTH = 8;
+const FIND_TIMEOUT_MS = 30_000;
+const MDFIND_TIMEOUT_MS = 15_000;
 
 function escapeMdfind(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
@@ -30,7 +37,13 @@ function mergeCandidate(map: Map<string, Candidate>, candidate: Candidate): void
     return;
   }
   existing.evidence.push(...candidate.evidence.filter((incoming) => !existing.evidence.some((current) => current.source === incoming.source && current.detail === incoming.detail)));
-  if (RISK_WEIGHT[candidate.risk] > RISK_WEIGHT[existing.risk]) {
+  // Conservative upgrade: protected wins over everything; confirmed wins over
+  // possible. Display order is RISK_ORDER (confirmed first), so the upgrade
+  // rule is explicit rather than a numeric max.
+  const shouldUpgrade =
+    (candidate.risk === "protected" && existing.risk !== "protected") ||
+    (existing.risk === "possible" && candidate.risk === "confirmed");
+  if (shouldUpgrade) {
     existing.risk = candidate.risk;
     existing.selectedByDefault = candidate.risk === "confirmed";
   }
@@ -56,8 +69,7 @@ function standardPaths(app: AppIdentity, paths: SystemPaths): Array<{ path: stri
 
 function classifyDeepPath(path: string, app: AppIdentity, paths: SystemPaths): RiskClass {
   const resolved = resolve(path);
-  const personalRoots = [join(paths.home, "Documents"), join(paths.home, "Desktop"), join(paths.home, "Downloads")];
-  if (personalRoots.some((root) => isWithin(resolved, root)) || isWithin(resolved, "/Library/Developer")) return "protected";
+  if (isPersonalProtectedPath(resolved, paths)) return "protected";
   if (resolved === resolve(app.path)) return "confirmed";
 
   const leaf = basename(resolved).toLowerCase();
@@ -184,15 +196,15 @@ async function deepPaths(app: AppIdentity, paths: SystemPaths, runner: CommandRu
   const roots = [paths.userLibrary, paths.systemLibrary, paths.temp];
   const escapeFindPattern = (value: string) => value.replaceAll("\\", "\\\\").replaceAll("*", "\\*").replaceAll("?", "\\?").replaceAll("[", "\\[");
   const patterns = [`*${escapeFindPattern(app.bundleId)}*`, `*${escapeFindPattern(app.displayName)}*`];
-  const command = ["/usr/bin/find", ...roots, "-maxdepth", "8", "(", "-iname", patterns[0]!, "-o", "-iname", patterns[1]!, ")", "-print"];
-  const result = await runner.run(command, { timeoutMs: 30_000 });
-  return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, 500);
+  const command = ["/usr/bin/find", ...roots, "-maxdepth", String(FIND_MAXDEPTH), "(", "-iname", patterns[0]!, "-o", "-iname", patterns[1]!, ")", "-print"];
+  const result = await runner.run(command, { timeoutMs: FIND_TIMEOUT_MS });
+  return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, MAX_DEEP_RESULTS);
 }
 
 async function spotlightPaths(app: AppIdentity, runner: CommandRunner): Promise<string[]> {
   const query = `kMDItemCFBundleIdentifier == '${escapeMdfind(app.bundleId)}' || kMDItemFSName == '*${escapeMdfind(app.bundleId)}*'cd`;
-  const result = await runner.run(["/usr/bin/mdfind", query], { timeoutMs: 15_000 });
-  return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, 500);
+  const result = await runner.run(["/usr/bin/mdfind", query], { timeoutMs: MDFIND_TIMEOUT_MS });
+  return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, MAX_SPOTLIGHT_RESULTS);
 }
 
 async function packagePayloads(app: AppIdentity, runner: CommandRunner): Promise<string[]> {
@@ -215,15 +227,7 @@ async function deferredActions(app: AppIdentity, runner: CommandRunner): Promise
     { type: "tcc", value: app.bundleId, description: `Reset local privacy permissions for ${app.bundleId}`, requiresAdmin: false },
     { type: "preferences-domain", value: app.bundleId, description: `Delete cached preferences domain ${app.bundleId}`, requiresAdmin: false },
   ];
-  const knownServices: Record<string, string[]> = {
-    "com.microsoft.VSCode": ["Code Safe Storage"],
-  };
-  const services = new Set([
-    `${app.displayName} Safe Storage`,
-    `${basename(app.path, ".app")} Safe Storage`,
-    app.bundleId,
-    ...(knownServices[app.bundleId] ?? []),
-  ]);
+  const services = new Set(candidateKeychainServices(app));
   for (const service of services) {
     const result = await runner.run(["/usr/bin/security", "find-generic-password", "-s", service]);
     if (result.exitCode === 0) actions.push({ type: "keychain", value: service, description: `Delete Keychain service ${service}`, requiresAdmin: false });
@@ -286,10 +290,9 @@ export async function scanApplication(app: AppIdentity, paths: SystemPaths, runn
   }
 
   const candidates = [...map.values()].sort((a, b) => {
-    const riskOrder = { confirmed: 0, possible: 1, protected: 2 } as const;
-    return riskOrder[a.risk] - riskOrder[b.risk] || a.path.localeCompare(b.path);
+    return RISK_ORDER[a.risk] - RISK_ORDER[b.risk] || a.path.localeCompare(b.path);
   });
-  if (app.bundleId.startsWith("com.apple.")) {
+  if (isProtectedAppleApp(app)) {
     for (const candidate of candidates) {
       candidate.risk = "protected";
       candidate.selectedByDefault = false;

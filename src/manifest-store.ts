@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { assertQuarantinePath, isWithin, SafetyError, validateLiteralPath } from "./safety";
 import { candidateId } from "./fs-utils";
+import { candidateKeychainServices, isValidBundleId } from "./app-policy";
 import { SCHEMA_VERSION, type DeferredAction, type SessionManifest, type SystemPaths } from "./types";
 
 export class ManifestStore {
@@ -39,8 +40,9 @@ export class ManifestStore {
       try {
         const id = file.slice(0, -".json".length);
         manifests.push(this.validate(JSON.parse(await readFile(join(this.paths.sessionRoot, file), "utf8")), id));
-      } catch {
+      } catch (error) {
         // Corrupt manifests are omitted here and reported by doctor/explicit load.
+        if (process.env.MACPURGE_DEBUG) console.warn(`Skipping corrupt manifest ${file}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return manifests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -50,7 +52,7 @@ export class ManifestStore {
     if (!raw || typeof raw !== "object") throw new SafetyError("Session manifest must be an object");
     const manifest = raw as SessionManifest;
     if (manifest.schemaVersion !== SCHEMA_VERSION || manifest.id !== expectedId) throw new SafetyError("Session manifest identity or schema is invalid");
-    if (!manifest.app || !/^[A-Za-z0-9][A-Za-z0-9.-]+$/u.test(manifest.app.bundleId) || manifest.app.bundleId.includes("..")) {
+    if (!manifest.app || !isValidBundleId(manifest.app.bundleId)) {
       throw new SafetyError("Session application identity is invalid");
     }
     validateLiteralPath(manifest.app.path, this.paths);
@@ -100,13 +102,7 @@ export class ManifestStore {
       case "keychain":
         if (/[\r\n]/u.test(action.value)) throw new SafetyError("Keychain action contains invalid characters");
         {
-          const knownServices: Record<string, string[]> = { "com.microsoft.VSCode": ["Code Safe Storage"] };
-          const validServices = new Set([
-            `${manifest.app.displayName} Safe Storage`,
-            `${basename(manifest.app.path, ".app")} Safe Storage`,
-            manifest.app.bundleId,
-            ...(knownServices[manifest.app.bundleId] ?? []),
-          ]);
+          const validServices = new Set(candidateKeychainServices(manifest.app));
           if (!validServices.has(action.value)) throw new SafetyError("Keychain action does not match the session application");
         }
         break;

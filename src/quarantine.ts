@@ -30,6 +30,9 @@ function payloadPath(sessionRoot: string, original: string): string {
 }
 
 async function sameDevice(source: string, destinationRoot: string): Promise<boolean> {
+  // stat (follow) is intentional here: rename(2) moves the link object, but the
+  // volume check must compare the containing filesystems. lstat would report the
+  // link itself; realpath/lstat drift is already enforced by revalidateCandidate.
   const [sourceInfo, destinationInfo] = await Promise.all([stat(source), stat(destinationRoot)]);
   return sourceInfo.dev === destinationInfo.dev;
 }
