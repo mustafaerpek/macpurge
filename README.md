@@ -203,7 +203,7 @@ macpurge combines multiple bounded sources instead of trusting a single filename
 4. A bundle-ID/name scan limited to approved local roots and depth.
 5. CLI symlinks and their resolved targets.
 6. Running processes and normal application quit state.
-7. Login items, background registrations, and Launch Services signals.
+7. Login items, background registrations, and `launchctl` references.
 8. LaunchAgents, LaunchDaemons, and PrivilegedHelperTools.
 9. Homebrew cask metadata, App Store receipts, and PKG receipts.
 10. Current-user macOS temporary directories.
