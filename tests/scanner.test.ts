@@ -7,12 +7,15 @@ import { scanApplication } from "../src/scanner";
 import { testPaths } from "./helpers";
 
 class ScannerRunner implements CommandRunner {
+  readonly calls: string[][] = [];
+
   constructor(
     private readonly findOutput: string[] = [],
     private readonly options: { keychainServices?: string[]; loginItems?: string[]; backgroundBundleId?: string; pgrepOutput?: string } = {},
   ) {}
 
   async run(command: readonly string[]): Promise<CommandResult> {
+    this.calls.push([...command]);
     if (command[0] === "/usr/bin/find") return { exitCode: 0, stdout: `${this.findOutput.join("\n")}\n`, stderr: "" };
     if (command[0] === "/usr/bin/du") return { exitCode: 0, stdout: `1\t${command.at(-1)}\n`, stderr: "" };
     if (command[0] === "/usr/bin/mdfind") return { exitCode: 0, stdout: "", stderr: "" };
@@ -131,5 +134,58 @@ describe("application scanner", () => {
     };
     const scan = await scanApplication(app, paths, new ScannerRunner([], { loginItems: ["Comma, App"] }), true);
     expect(scan.deferredActions.some((action) => action.type === "login-item" && action.value === "Comma, App")).toBeTrue();
+  });
+
+  test("measures each unique path once even when multiple sources report it", async () => {
+    const paths = await testPaths();
+    const appPath = join(paths.applications, "Example.app");
+    const cache = join(paths.userLibrary, "Caches", "com.example.app");
+    await Promise.all([mkdir(join(appPath, "Contents"), { recursive: true }), mkdir(cache, { recursive: true })]);
+    const app: AppIdentity = { displayName: "Example", bundleId: "com.example.app", path: appPath, installSource: "standalone", packageReceipts: [] };
+    const runner = new ScannerRunner([cache, cache]);
+    const scan = await scanApplication(app, paths, runner, true);
+    const duTargets = runner.calls.filter((command) => command[0] === "/usr/bin/du").map((command) => command.at(-1));
+    expect(duTargets.sort()).toEqual([cache, appPath].sort());
+    // Evidence from every source is preserved on the merged candidate.
+    const sources = scan.candidates.find((item) => item.path === cache)?.evidence.map((item) => item.source) ?? [];
+    expect(sources).toContain("standard-path");
+    expect(sources).toContain("deep-scan");
+  });
+
+  test("user rules cannot confirm paths outside trusted app-data roots", async () => {
+    const paths = await testPaths();
+    const appPath = join(paths.applications, "Example.app");
+    const customData = join(paths.home, ".myapp-data");
+    await Promise.all([mkdir(appPath, { recursive: true }), mkdir(customData, { recursive: true })]);
+    await mkdir(paths.userRuleRoot, { recursive: true });
+    await writeFile(join(paths.userRuleRoot, "custom.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "custom-app",
+      bundleIds: ["com.example.app"],
+      candidates: [{ pathTemplate: "{home}/.myapp-data", kind: "application-support", risk: "confirmed", reason: "Wants automatic selection" }],
+    }));
+    const app: AppIdentity = { displayName: "Example", bundleId: "com.example.app", path: appPath, installSource: "standalone", packageReceipts: [] };
+    const scan = await scanApplication(app, paths, new ScannerRunner(), true);
+    expect(scan.candidates.find((item) => item.path === customData)?.risk).toBe("possible");
+  });
+
+  test("rule expansions that land in sensitive locations are skipped, not scanned", async () => {
+    const paths = await testPaths();
+    const appPath = join(paths.applications, "Evil.app");
+    const projects = join(paths.home, "Projects");
+    await Promise.all([mkdir(appPath, { recursive: true }), mkdir(projects, { recursive: true })]);
+    await mkdir(paths.userRuleRoot, { recursive: true });
+    // The rule passes validation because the sample app name is harmless; the
+    // scan-time expansion uses the real (hostile) display name.
+    await writeFile(join(paths.userRuleRoot, "sneaky.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "sneaky-app",
+      bundleIds: ["com.example.evil"],
+      candidates: [{ pathTemplate: "{home}/{appName}", kind: "application-support", risk: "confirmed", reason: "App data" }],
+    }));
+    const app: AppIdentity = { displayName: "Projects", bundleId: "com.example.evil", path: appPath, installSource: "standalone", packageReceipts: [] };
+    const scan = await scanApplication(app, paths, new ScannerRunner(), true);
+    expect(scan.candidates.some((item) => item.path === projects)).toBeFalse();
+    expect(scan.warnings.some((warning) => warning.includes("sneaky-app") && warning.includes(projects))).toBeTrue();
   });
 });

@@ -5,11 +5,12 @@ import { inferKind, makeCandidate } from "./fs-utils";
 import { isPersonalProtectedPath, isWithin } from "./safety";
 import { candidateKeychainServices, isProtectedAppleApp } from "./app-policy";
 import { applicationPids, loginItemExists } from "./processes";
-import { expandRulePath, loadRules, rulesForApp } from "./rules";
+import { assessRulePath, expandRulePath, loadRules, rulesForApp } from "./rules";
 import {
   SCHEMA_VERSION,
   type AppIdentity,
   type Candidate,
+  type CandidateKind,
   type DeferredAction,
   type Evidence,
   type RiskClass,
@@ -24,29 +25,57 @@ const MAX_DEEP_RESULTS = 500;
 const FIND_MAXDEPTH = 8;
 const FIND_TIMEOUT_MS = 30_000;
 const MDFIND_TIMEOUT_MS = 15_000;
+// Upper bound on concurrent lstat/du work while materializing the deduplicated
+// plan; keeps a large scan from spawning dozens of simultaneous subprocesses.
+const MATERIALIZE_CONCURRENCY = 8;
 
 function escapeMdfind(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
 }
 
-function mergeCandidate(map: Map<string, Candidate>, candidate: Candidate): void {
-  const key = resolve(candidate.path);
+interface PlannedCandidate {
+  kind: CandidateKind;
+  risk: RiskClass;
+  evidence: Evidence[];
+}
+
+// Candidates are planned (deduplicated by resolved path) before any expensive
+// filesystem work, so a path reported by several sources is measured once.
+function mergePlanned(map: Map<string, PlannedCandidate>, path: string, kind: CandidateKind, risk: RiskClass, evidence: Evidence): void {
+  const key = resolve(path);
   const existing = map.get(key);
   if (!existing) {
-    map.set(key, candidate);
+    map.set(key, { kind, risk, evidence: [evidence] });
     return;
   }
-  existing.evidence.push(...candidate.evidence.filter((incoming) => !existing.evidence.some((current) => current.source === incoming.source && current.detail === incoming.detail)));
+  if (!existing.evidence.some((current) => current.source === evidence.source && current.detail === evidence.detail)) {
+    existing.evidence.push(evidence);
+  }
   // Conservative upgrade: protected wins over everything; confirmed wins over
   // possible. Display order is RISK_ORDER (confirmed first), so the upgrade
   // rule is explicit rather than a numeric max.
   const shouldUpgrade =
-    (candidate.risk === "protected" && existing.risk !== "protected") ||
-    (existing.risk === "possible" && candidate.risk === "confirmed");
+    (risk === "protected" && existing.risk !== "protected") ||
+    (existing.risk === "possible" && risk === "confirmed");
   if (shouldUpgrade) {
-    existing.risk = candidate.risk;
-    existing.selectedByDefault = candidate.risk === "confirmed";
+    existing.risk = risk;
   }
+}
+
+async function materializeCandidates(map: Map<string, PlannedCandidate>, runner: CommandRunner): Promise<Candidate[]> {
+  const entries = [...map.entries()];
+  const results: Array<Candidate | undefined> = new Array(entries.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(MATERIALIZE_CONCURRENCY, entries.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= entries.length) return;
+      const [path, planned] = entries[index]!;
+      results[index] = await makeCandidate({ path, kind: planned.kind, risk: planned.risk, evidence: planned.evidence, runner });
+    }
+  });
+  await Promise.all(workers);
+  return results.filter((value): value is Candidate => value !== undefined);
 }
 
 function standardPaths(app: AppIdentity, paths: SystemPaths): Array<{ path: string; risk: RiskClass; detail: string }> {
@@ -96,40 +125,48 @@ function classifyDeepPath(path: string, app: AppIdentity, paths: SystemPaths): R
   return "possible";
 }
 
-async function addPathCandidate(
-  map: Map<string, Candidate>,
+function planPathCandidate(
+  map: Map<string, PlannedCandidate>,
   path: string,
   risk: RiskClass,
   evidence: Evidence,
   paths: SystemPaths,
-  runner: CommandRunner,
-): Promise<void> {
+): void {
   if (isWithin(path, paths.supportRoot)) return;
-  const candidate = await makeCandidate({ path, kind: inferKind(path), risk, evidence: [evidence], runner });
-  if (candidate) mergeCandidate(map, candidate);
+  mergePlanned(map, path, inferKind(path), risk, evidence);
 }
 
-async function byHostPreferences(app: AppIdentity, paths: SystemPaths): Promise<string[]> {
+async function byHostPreferences(app: AppIdentity, paths: SystemPaths, warnings: string[]): Promise<string[]> {
   const root = join(paths.userLibrary, "Preferences", "ByHost");
   try {
     return (await readdir(root)).filter((name) => name.startsWith(`${app.bundleId}.`)).map((name) => join(root, name));
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`Could not read ByHost preferences: ${String(error)}`);
     return [];
   }
 }
 
-async function scanRuleCandidates(app: AppIdentity, paths: SystemPaths, runner: CommandRunner, map: Map<string, Candidate>): Promise<string[]> {
+async function scanRuleCandidates(app: AppIdentity, paths: SystemPaths, map: Map<string, PlannedCandidate>, warnings: string[]): Promise<void> {
   const loaded = await loadRules(paths);
   for (const rule of rulesForApp(loaded.rules, app)) {
     for (const entry of rule.candidates) {
-      const expanded = expandRulePath(entry.pathTemplate, app, paths);
+      let expanded: string;
+      try {
+        expanded = expandRulePath(entry.pathTemplate, app, paths);
+      } catch (error) {
+        // A crafted display name could expand a template into a forbidden
+        // location; skip the entry instead of aborting the whole scan.
+        warnings.push(`Rule ${rule.id} entry ${entry.pathTemplate} could not be expanded: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
       let matches = [expanded];
       if (entry.match === "prefix") {
         const parent = dirname(expanded);
         const prefix = basename(expanded);
         try {
           matches = (await readdir(parent)).filter((name) => name.startsWith(prefix)).map((name) => join(parent, name));
-        } catch {
+        } catch (error) {
+          warnings.push(`Rule ${rule.id} prefix match failed for ${parent}: ${String(error)}`);
           matches = [];
         }
       }
@@ -143,21 +180,20 @@ async function scanRuleCandidates(app: AppIdentity, paths: SystemPaths, runner: 
             continue;
           }
         }
-        const candidate = await makeCandidate({
-          path,
-          kind: entry.kind,
-          risk: entry.risk,
-          evidence: [{ source: "rule", detail: `${rule.id}: ${entry.reason}` }],
-          runner,
-        });
-        if (candidate) mergeCandidate(map, candidate);
+        // Re-assess the real expansion: validation only saw the sample tokens.
+        const verdict = assessRulePath(path, paths, entry.risk, rule.origin);
+        if (!verdict.allowed) {
+          warnings.push(`Rule ${rule.id} skipped ${path}: ${verdict.reason}`);
+          continue;
+        }
+        mergePlanned(map, path, entry.kind, verdict.risk, { source: "rule", detail: `${rule.id}: ${entry.reason}` });
       }
     }
   }
-  return loaded.warnings;
+  for (const warning of loaded.warnings) warnings.push(warning);
 }
 
-async function scanSymlinks(app: AppIdentity, paths: SystemPaths, runner: CommandRunner, map: Map<string, Candidate>): Promise<void> {
+async function scanSymlinks(app: AppIdentity, paths: SystemPaths, map: Map<string, PlannedCandidate>, warnings: string[]): Promise<void> {
   let appRoot = app.path;
   try {
     appRoot = await realpath(app.path);
@@ -168,7 +204,8 @@ async function scanSymlinks(app: AppIdentity, paths: SystemPaths, runner: Comman
     let names: string[] = [];
     try {
       names = await readdir(root);
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`Could not read bin root ${root}: ${String(error)}`);
       continue;
     }
     for (const name of names) {
@@ -177,14 +214,7 @@ async function scanSymlinks(app: AppIdentity, paths: SystemPaths, runner: Comman
         if (!(await lstat(path)).isSymbolicLink()) continue;
         const target = await realpath(path);
         if (!isWithin(target, appRoot)) continue;
-        const candidate = await makeCandidate({
-          path,
-          kind: "cli-symlink",
-          risk: "confirmed",
-          evidence: [{ source: "symlink", detail: `Resolves inside ${app.path}` }],
-          runner,
-        });
-        if (candidate) mergeCandidate(map, candidate);
+        mergePlanned(map, path, "cli-symlink", "confirmed", { source: "symlink", detail: `Resolves inside ${app.path}` });
       } catch {
         // Broken or racing symlinks are ignored.
       }
@@ -192,18 +222,22 @@ async function scanSymlinks(app: AppIdentity, paths: SystemPaths, runner: Comman
   }
 }
 
-async function deepPaths(app: AppIdentity, paths: SystemPaths, runner: CommandRunner): Promise<string[]> {
+async function deepPaths(app: AppIdentity, paths: SystemPaths, runner: CommandRunner, errors: string[]): Promise<string[]> {
   const roots = [paths.userLibrary, paths.systemLibrary, paths.temp];
   const escapeFindPattern = (value: string) => value.replaceAll("\\", "\\\\").replaceAll("*", "\\*").replaceAll("?", "\\?").replaceAll("[", "\\[");
   const patterns = [`*${escapeFindPattern(app.bundleId)}*`, `*${escapeFindPattern(app.displayName)}*`];
   const command = ["/usr/bin/find", ...roots, "-maxdepth", String(FIND_MAXDEPTH), "(", "-iname", patterns[0]!, "-o", "-iname", patterns[1]!, ")", "-print"];
   const result = await runner.run(command, { timeoutMs: FIND_TIMEOUT_MS });
+  // find exits 1 when some directories were unreadable but the listing is
+  // still meaningful; anything else means the scan did not really run.
+  if (result.exitCode > 1) errors.push(`Deep filesystem scan failed: find exited with code ${result.exitCode}${result.stderr.trim() ? `: ${result.stderr.trim()}` : ""}`);
   return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, MAX_DEEP_RESULTS);
 }
 
-async function spotlightPaths(app: AppIdentity, runner: CommandRunner): Promise<string[]> {
+async function spotlightPaths(app: AppIdentity, runner: CommandRunner, warnings: string[]): Promise<string[]> {
   const query = `kMDItemCFBundleIdentifier == '${escapeMdfind(app.bundleId)}' || kMDItemFSName == '*${escapeMdfind(app.bundleId)}*'cd`;
   const result = await runner.run(["/usr/bin/mdfind", query], { timeoutMs: MDFIND_TIMEOUT_MS });
+  if (result.exitCode !== 0) warnings.push(`Spotlight scan exited with code ${result.exitCode}; results may be incomplete`);
   return result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, MAX_SPOTLIGHT_RESULTS);
 }
 
@@ -246,9 +280,14 @@ async function deferredActions(app: AppIdentity, runner: CommandRunner): Promise
   return actions;
 }
 
-async function runtimeWarnings(app: AppIdentity, runner: CommandRunner): Promise<string[]> {
+async function runtimeWarnings(app: AppIdentity, runner: CommandRunner, errors: string[]): Promise<string[]> {
   const warnings: string[] = [];
-  const pids = (await applicationPids(app, runner)).map(String);
+  let pids: string[] = [];
+  try {
+    pids = (await applicationPids(app, runner)).map(String);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
   if (pids.length > 0) warnings.push(`RUNTIME_RESIDUE: running process IDs: ${pids.join(", ")}`);
 
   const background = await runner.run(["/usr/bin/sfltool", "dumpbtm"]);
@@ -263,33 +302,34 @@ async function runtimeWarnings(app: AppIdentity, runner: CommandRunner): Promise
 }
 
 export async function scanApplication(app: AppIdentity, paths: SystemPaths, runner: CommandRunner, deep = true): Promise<ScanResult> {
-  const map = new Map<string, Candidate>();
+  const map = new Map<string, PlannedCandidate>();
   const errors: string[] = [];
-  const warnings = await scanRuleCandidates(app, paths, runner, map);
-  warnings.push(...(await runtimeWarnings(app, runner)));
+  const warnings: string[] = [];
+  await scanRuleCandidates(app, paths, map, warnings);
+  warnings.push(...(await runtimeWarnings(app, runner, errors)));
 
-  await addPathCandidate(map, app.path, "confirmed", { source: "identity", detail: `Application bundle ${app.bundleId}` }, paths, runner);
+  planPathCandidate(map, app.path, "confirmed", { source: "identity", detail: `Application bundle ${app.bundleId}` }, paths);
   for (const item of standardPaths(app, paths)) {
-    await addPathCandidate(map, item.path, item.risk, { source: "standard-path", detail: item.detail }, paths, runner);
+    planPathCandidate(map, item.path, item.risk, { source: "standard-path", detail: item.detail }, paths);
   }
-  for (const path of await byHostPreferences(app, paths)) {
-    await addPathCandidate(map, path, "confirmed", { source: "standard-path", detail: "Bundle-specific ByHost preference" }, paths, runner);
+  for (const path of await byHostPreferences(app, paths, warnings)) {
+    planPathCandidate(map, path, "confirmed", { source: "standard-path", detail: "Bundle-specific ByHost preference" }, paths);
   }
-  await scanSymlinks(app, paths, runner, map);
+  await scanSymlinks(app, paths, map, warnings);
 
-  for (const path of await spotlightPaths(app, runner)) {
-    await addPathCandidate(map, path, classifyDeepPath(path, app, paths), { source: "spotlight", detail: "Spotlight bundle/name match" }, paths, runner);
+  for (const path of await spotlightPaths(app, runner, warnings)) {
+    planPathCandidate(map, path, classifyDeepPath(path, app, paths), { source: "spotlight", detail: "Spotlight bundle/name match" }, paths);
   }
   if (deep) {
-    for (const path of await deepPaths(app, paths, runner)) {
-      await addPathCandidate(map, path, classifyDeepPath(path, app, paths), { source: "deep-scan", detail: "Bounded bundle/name filesystem match" }, paths, runner);
+    for (const path of await deepPaths(app, paths, runner, errors)) {
+      planPathCandidate(map, path, classifyDeepPath(path, app, paths), { source: "deep-scan", detail: "Bounded bundle/name filesystem match" }, paths);
     }
   }
   for (const path of await packagePayloads(app, runner)) {
-    await addPathCandidate(map, path, path === app.path ? "confirmed" : "possible", { source: "receipt", detail: "Related package receipt payload" }, paths, runner);
+    planPathCandidate(map, path, path === app.path ? "confirmed" : "possible", { source: "receipt", detail: "Related package receipt payload" }, paths);
   }
 
-  const candidates = [...map.values()].sort((a, b) => {
+  const candidates = (await materializeCandidates(map, runner)).sort((a, b) => {
     return RISK_ORDER[a.risk] - RISK_ORDER[b.risk] || a.path.localeCompare(b.path);
   });
   if (isProtectedAppleApp(app)) {

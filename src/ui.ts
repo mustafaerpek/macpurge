@@ -127,6 +127,7 @@ export function printScanReport(scan: ScanResult): void {
   if (scan.deferredActions.length > 0) printDeferred(scan.deferredActions);
   printRiskSummary(scan.candidates);
   for (const warning of scan.warnings) printWarning(warning);
+  for (const error of scan.errors) printError(error);
 }
 
 export function printRiskSummary(candidates: Candidate[]): void {
