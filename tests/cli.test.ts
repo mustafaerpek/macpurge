@@ -43,4 +43,11 @@ describe("CLI contract", () => {
     expect(payload.status).toBe("error");
     expect(payload.errors[0]).toContain("Unknown command");
   });
+
+  test("importing the CLI module does not run the command router", () => {
+    // Regression: importing cli.ts used to execute main() with the host's argv
+    // and stamp process.exitCode (bun test exited 2 despite every test passing).
+    const proc = Bun.spawnSync([process.execPath, "-e", `import ${JSON.stringify(cli)}`]);
+    expect(proc.exitCode).toBe(0);
+  });
 });

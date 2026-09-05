@@ -250,13 +250,18 @@ async function main(): Promise<number> {
   return runCli(process.argv.slice(2), createDefaultDeps());
 }
 
-try {
-  process.exitCode = await main();
-} catch (error) {
-  const exitCode = error instanceof CliError ? error.exitCode : 1;
-  const message = error instanceof Error ? error.message : String(error);
-  const wantsJson = process.argv.includes("--json");
-  if (wantsJson) console.log(JSON.stringify({ schemaVersion: SCHEMA_VERSION, status: "error", warnings: [], errors: [message] }, null, 2));
-  else printError(message);
-  process.exitCode = exitCode;
+// Only run the command router when this file is the entrypoint. Importing the
+// module (tests, tooling) must never execute main() or leak an exit code into
+// the host process.
+if (import.meta.main) {
+  try {
+    process.exitCode = await main();
+  } catch (error) {
+    const exitCode = error instanceof CliError ? error.exitCode : 1;
+    const message = error instanceof Error ? error.message : String(error);
+    const wantsJson = process.argv.includes("--json");
+    if (wantsJson) console.log(JSON.stringify({ schemaVersion: SCHEMA_VERSION, status: "error", warnings: [], errors: [message] }, null, 2));
+    else printError(message);
+    process.exitCode = exitCode;
+  }
 }
