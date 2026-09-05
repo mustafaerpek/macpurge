@@ -153,7 +153,7 @@ The path safety layer rejects, among other cases:
 - symlinks that do not resolve into the selected application
 - quarantine paths belonging to another session
 
-Every selected path, real path, ownership, symlink target, and filesystem boundary is checked again immediately before mutation.
+Every selected path, real path, ownership, symlink target, file type, inode, and filesystem boundary is checked again immediately before mutation. Restore writes additionally verify the symlink-resolved parent directory, so a redirected parent cannot move a file outside the supported roots, and administrator moves use `mv -n` so an existing destination is never overwritten.
 
 ## Quarantine lifecycle
 
@@ -228,7 +228,9 @@ Only application-specific, strongly attributable payloads can be confirmed autom
 
 ## Running applications
 
-Before quarantine, macpurge requests a normal quit using the bundle ID and waits five seconds. If processes remain, it can request `SIGTERM`; `SIGKILL` requires a separate confirmation. Non-interactive execution never approves force termination automatically.
+Before quarantine, macpurge detects running processes with the system `pgrep -fl` and verifies each candidate's executable against the bundle (including bundles installed through a symlink). It then requests a normal quit using the bundle ID and waits five seconds. If processes remain, it can request `SIGTERM`; `SIGKILL` requires a separate confirmation. Non-interactive execution never approves force termination automatically.
+
+A process lookup failure is reported as an error and stops the uninstall instead of being misread as "the application is not running."
 
 ## Non-interactive and JSON use
 
@@ -289,6 +291,15 @@ Allowed template tokens:
 
 Rules may describe only paths, classifications, reasons, and supported platform conditions. They cannot contain or execute arbitrary commands. Wildcards, traversal, unknown tokens, and protected-root matches are rejected.
 
+Because user rules are untrusted input, additional policy applies to them:
+
+- Rules targeting sensitive locations—`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config`, package-manager and developer state such as `~/.cargo`, and broad source trees such as `~/Projects`—are rejected outright.
+- Rules pointing into the macpurge support root (its own quarantine and session data) are rejected so a rule can never destroy the recovery path.
+- A `confirmed` classification is honored only inside standard app-data locations (`~/Library/Application Support`, `Caches`, `Preferences`, and similar). Anything else is demoted to review (`possible`) and requires explicit opt-in.
+- `kind`, `risk`, `platform`, and `bundleIds` are validated against the same domain vocabularies the scanner uses; bundle IDs must pass the canonical validator.
+
+These checks run when a rule is loaded and again when the scanner expands it with the real application identity, so a display name cannot steer an expansion into a forbidden directory. Built-in profiles ship with the binary and are reviewed code; the demotion policy applies only to user rules.
+
 Validate and explain rules before relying on them:
 
 ```bash
@@ -333,7 +344,7 @@ bun run bench
 bun run build
 ```
 
-The suite uses temporary fake macOS roots and command-runner doubles. It does not uninstall real applications. `bun run bench` measures scan wall time and per-command cost on a synthetic tree without changing scan behavior. Current coverage includes:
+The suite uses temporary fake macOS roots and command-runner doubles. It does not uninstall real applications. Integration tests marked `real macOS process detection` compile a small helper binary into a fake bundle and verify process detection against the live system `pgrep`; they run on macOS with a compiler available and are skipped elsewhere. `bun run bench` measures scan wall time and per-command cost on a synthetic tree without changing scan behavior. Current coverage includes:
 
 - ambiguous selectors and multiple same-name applications
 - VS Code-style data, extensions, CLI links, and updater files
@@ -341,12 +352,19 @@ The suite uses temporary fake macOS roots and command-runner doubles. It does no
 - ambiguous copies under another application's data
 - Homebrew, App Store, and PKG scenarios
 - symlink escape, traversal, roots, malformed rules, and permissions
+- live process detection, argument-only decoys, symlinked bundles, and pgrep failure surfacing
 - graceful quit, forced termination, and denied escalation
+- symlink retargeting, file replacement, and file-type changes between scan and mutation
 - partial movement and manifest continuity
-- restore collisions and overwrite prevention
+- restore collisions and overwrite prevention, including redirected parent paths
+- manifest status validation and state-transition rules
+- rejection and demotion of unsafe user rules
+- deduplicated size measurement across overlapping scan sources
 - deferred irreversible actions
 - JSON envelopes and exit codes
 - standalone binary smoke checks
+
+Continuous Integration runs on a macOS arm64 runner and executes `bun install --frozen-lockfile`, `bun run check`, `bun test`, `bun run build`, and a `--help`/`--version` smoke test of the built binary.
 
 ## Privacy
 
