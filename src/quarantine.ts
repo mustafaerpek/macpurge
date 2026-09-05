@@ -2,8 +2,8 @@ import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CommandRunner } from "./command";
-import { ManifestStore } from "./manifest-store";
-import { assertQuarantinePath, isWithin, revalidateCandidate, SafetyError, validateLiteralPath } from "./safety";
+import { ManifestStore, transitionStatus } from "./manifest-store";
+import { assertQuarantinePath, isWithin, revalidateCandidate, revalidateWriteParent, SafetyError, validateLiteralPath } from "./safety";
 import { loginItemDeleteScript } from "./processes";
 import { pathExists } from "./fs-utils";
 import {
@@ -51,10 +51,20 @@ export class QuarantineService {
     if (admin) {
       const prepared = await this.runner.run(["/usr/bin/sudo", "/bin/mkdir", "-p", dirname(destination)], { interactive: true });
       if (prepared.exitCode !== 0) throw new Error(`sudo mkdir failed with exit code ${prepared.exitCode}`);
-      const result = await this.runner.run(["/usr/bin/sudo", "/bin/mv", source, destination], { interactive: true });
-      if (result.exitCode !== 0) throw new Error(`sudo mv failed with exit code ${result.exitCode}`);
     } else {
       await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    }
+    // The parent now exists, so its real (symlink-resolved) location can be
+    // verified: a planted symlink ancestor must not redirect the write.
+    await revalidateWriteParent(destination, this.paths);
+    if (await pathExists(destination)) throw new SafetyError(`Destination already exists: ${destination}`);
+    if (admin) {
+      // -n never overwrites an existing file; a silent skip is detected by
+      // requiring the source to be gone afterwards.
+      const result = await this.runner.run(["/usr/bin/sudo", "/bin/mv", "-n", source, destination], { interactive: true });
+      if (result.exitCode !== 0) throw new Error(`sudo mv failed with exit code ${result.exitCode}`);
+      if (await pathExists(source)) throw new SafetyError(`Move did not complete; destination may already exist: ${destination}`);
+    } else {
       await rename(source, destination);
     }
   }
@@ -86,7 +96,7 @@ export class QuarantineService {
       errors: [],
     };
     await this.store.save(manifest);
-    manifest.status = "quarantining";
+    manifest.status = transitionStatus(manifest.status, "quarantining");
     await this.store.save(manifest);
 
     for (const item of manifest.items) {
@@ -105,7 +115,7 @@ export class QuarantineService {
       await this.store.save(manifest);
     }
 
-    manifest.status = manifest.items.every((item) => item.status === "moved") ? "quarantined" : "partial";
+    manifest.status = transitionStatus(manifest.status, manifest.items.every((item) => item.status === "moved") ? "quarantined" : "partial");
     await this.store.save(manifest);
     return manifest;
   }
@@ -121,7 +131,8 @@ export class QuarantineService {
         const source = assertQuarantinePath(item.quarantinePath, this.paths);
         const destination = validateLiteralPath(item.originalPath, this.paths);
         if (!(await pathExists(source))) throw new Error(`Quarantined item is missing: ${source}`);
-        if (await pathExists(destination)) throw new Error(`Restore destination already exists: ${destination}`);
+        // move() refuses to overwrite an existing destination and verifies the
+        // real parent directory before the rename.
         await this.move(source, destination, item.candidate.requiresAdmin);
         item.status = "restored";
         delete item.error;
@@ -132,7 +143,7 @@ export class QuarantineService {
       }
       await this.store.save(manifest);
     }
-    manifest.status = manifest.items.every((item) => item.status === "restored") ? "restored" : "partial";
+    manifest.status = transitionStatus(manifest.status, manifest.items.every((item) => item.status === "restored") ? "restored" : "partial");
     await this.store.save(manifest);
     return manifest;
   }
@@ -183,7 +194,7 @@ export class QuarantineService {
     if (manifest.items.some((item) => item.status !== "moved" && item.status !== "purged")) {
       throw new Error("A partial session with unmoved items must be restored or repaired before purge");
     }
-    manifest.status = "purging";
+    manifest.status = transitionStatus(manifest.status, "purging");
     manifest.errors = [];
     await this.store.save(manifest);
 
@@ -192,7 +203,7 @@ export class QuarantineService {
       const error = await this.runDeferred(action);
       if (error) {
         manifest.errors.push(error);
-        manifest.status = "partial";
+        manifest.status = transitionStatus(manifest.status, "partial");
         await this.store.save(manifest);
         return manifest;
       }
@@ -205,13 +216,13 @@ export class QuarantineService {
       const result = await this.runner.run(["/usr/bin/sudo", "/bin/rm", "-rf", sessionDirectory], { interactive: true });
       if (result.exitCode !== 0) {
         manifest.errors.push(`Could not delete quarantine payload: ${sessionDirectory}`);
-        manifest.status = "partial";
+        manifest.status = transitionStatus(manifest.status, "partial");
         await this.store.save(manifest);
         return manifest;
       }
     }
     for (const item of manifest.items) if (item.status === "moved") item.status = "purged";
-    manifest.status = "purged";
+    manifest.status = transitionStatus(manifest.status, "purged");
     await this.store.save(manifest);
     return manifest;
   }

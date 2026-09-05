@@ -1,10 +1,16 @@
 import { access, lstat, realpath } from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import type { Candidate, SystemPaths } from "./types";
 
 export class SafetyError extends Error {
   override name = "SafetyError";
+}
+
+export type FileType = "file" | "directory" | "symlink" | "other";
+
+export function fileTypeOf(info: Stats): FileType {
+  return info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : info.isFile() ? "file" : "other";
 }
 
 function isWithin(child: string, parent: string): boolean {
@@ -80,17 +86,58 @@ export async function revalidateCandidate(candidate: Candidate, paths: SystemPat
   const literal = validateLiteralPath(candidate.path, paths);
   // lstat inspects the link object itself (does not follow); realpath below
   // resolves the final target so symlink drift can be detected.
-  await lstat(literal);
+  const info = await lstat(literal);
   const resolved = await realpath(literal);
 
-  if (candidate.kind === "cli-symlink") {
-    if (!candidate.realPath || resolve(candidate.realPath) !== resolve(resolved)) {
-      throw new SafetyError(`Symlink target changed since scan: ${literal}`);
-    }
-  } else if (candidate.realPath && resolve(candidate.realPath) !== resolve(resolved)) {
-    throw new SafetyError(`Path target changed since scan: ${literal}`);
+  if (!candidate.realPath || resolve(candidate.realPath) !== resolve(resolved)) {
+    throw new SafetyError(`Symlink target changed since scan: ${literal}`);
+  }
+  if (candidate.fileType && fileTypeOf(info) !== candidate.fileType) {
+    throw new SafetyError(`File type changed since scan: ${literal}`);
+  }
+  if (candidate.ino !== undefined && info.ino !== candidate.ino) {
+    throw new SafetyError(`File identity changed since scan (inode mismatch): ${literal}`);
+  }
+  if (candidate.dev !== undefined && info.dev !== candidate.dev) {
+    throw new SafetyError(`File identity changed since scan (device mismatch): ${literal}`);
   }
   return literal;
+}
+
+/**
+ * Re-checks the real (symlink-resolved) parent directory of a planned write so
+ * a symlinked ancestor cannot redirect the mutation outside the approved roots.
+ * Must be called after the parent directory exists. Every boundary root is
+ * resolved as well, because the real parent may carry a different system path
+ * spelling (/var vs /private/var) than the configured roots.
+ */
+export async function revalidateWriteParent(destination: string, paths: SystemPaths): Promise<void> {
+  let realParent: string;
+  try {
+    realParent = await realpath(dirname(destination));
+  } catch {
+    throw new SafetyError(`Real parent path does not exist: ${destination}`);
+  }
+  // These two checks mirror validateLiteralPath's semantics, applied to the
+  // real parent the write will land in: personal data is never writable, and
+  // the parent must sit inside the supported roots (a root itself, such as
+  // /Applications as the parent of a restored bundle, is legitimate).
+  const realPersonal = await Promise.all(personalProtectedRoots(paths).map(realpathBestEffort));
+  if (realPersonal.some((root) => isWithin(realParent, root))) {
+    throw new SafetyError(`Real parent path is personal or developer data: ${realParent}`);
+  }
+  const realAllowed = await Promise.all(allowedRoots(paths).map(realpathBestEffort));
+  if (!realAllowed.some((root) => isWithin(realParent, root))) {
+    throw new SafetyError(`Real parent path is outside supported roots: ${realParent}`);
+  }
+}
+
+async function realpathBestEffort(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 export function assertQuarantinePath(path: string, paths: SystemPaths): string {

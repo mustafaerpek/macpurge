@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import type { Candidate, CandidateKind, Evidence, RiskClass } from "./types";
-import { parentNeedsAdmin } from "./safety";
+import { fileTypeOf, parentNeedsAdmin } from "./safety";
 import type { CommandRunner } from "./command";
 
 export async function pathExists(path: string): Promise<boolean> {
@@ -35,7 +35,7 @@ export async function makeCandidate(input: {
 }): Promise<Candidate | undefined> {
   const protectedCandidate = (
     detail: string,
-    extra?: Pick<Candidate, "owner" | "group" | "mode">,
+    extra?: Pick<Candidate, "owner" | "group" | "mode" | "dev" | "ino" | "fileType">,
   ): Candidate => ({
     id: candidateId(input.path, input.kind),
     path: input.path,
@@ -68,6 +68,9 @@ export async function makeCandidate(input: {
         owner: String(info.uid),
         group: String(info.gid),
         mode: (info.mode & 0o7777).toString(8),
+        dev: info.dev,
+        ino: info.ino,
+        fileType: fileTypeOf(info),
       });
     }
     throw error;
@@ -84,6 +87,9 @@ export async function makeCandidate(input: {
     owner: String(info.uid),
     group: String(info.gid),
     mode: (info.mode & 0o7777).toString(8),
+    dev: info.dev,
+    ino: info.ino,
+    fileType: fileTypeOf(info),
     requiresAdmin,
     selectedByDefault: input.risk === "confirmed",
   };

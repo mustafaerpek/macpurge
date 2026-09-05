@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { BunCommandRunner, type CommandResult, type CommandRunner } from "../src/command";
 import { makeCandidate, pathExists } from "../src/fs-utils";
 import { collapseCandidates, QuarantineService } from "../src/quarantine";
@@ -18,7 +18,7 @@ class RecordingRunner implements CommandRunner {
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (command[0] === "/usr/bin/sudo" && command[1] === "/bin/mv") {
-      await rename(command[2]!, command[3]!);
+      await rename(command[3]!, command[4]!);
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (command[0] === "/usr/bin/sudo" && command[1] === "/bin/rm") {
@@ -117,7 +117,7 @@ describe("quarantine transactions", () => {
     const adminCandidate = { ...candidates[0]!, requiresAdmin: true };
     const manifest = await service.quarantine(app, [adminCandidate], []);
     expect(manifest.status).toBe("quarantined");
-    expect(runner.calls.some((command) => command[0] === "/usr/bin/sudo" && command[1] === "/bin/mv" && command[2] === adminCandidate.path)).toBeTrue();
+    expect(runner.calls.some((command) => command[0] === "/usr/bin/sudo" && command[1] === "/bin/mv" && command[2] === "-n" && command[3] === adminCandidate.path)).toBeTrue();
   });
 
   test("records partial movement and refuses to purge unmoved items", async () => {
@@ -172,5 +172,87 @@ describe("quarantine transactions", () => {
     const service = new QuarantineService(paths, new RecordingRunner());
     const unknown = { type: "unknown-action", value: "x", description: "Unknown", requiresAdmin: false } as never;
     await expect((service as unknown as { runDeferred: (a: never) => Promise<string | undefined> }).runDeferred(unknown)).rejects.toThrow("Unknown deferred action");
+  });
+
+  test("fails the move when a symlink target changes between scan and mutation", async () => {
+    const paths = await testPaths();
+    const runner = new BunCommandRunner();
+    const targetA = join(paths.userLibrary, "Caches", "target-a");
+    const targetB = join(paths.userLibrary, "Caches", "target-b");
+    const link = join(paths.userLibrary, "Application Support", "Example");
+    await Promise.all([mkdir(targetA, { recursive: true }), mkdir(targetB, { recursive: true }), mkdir(dirname(link), { recursive: true })]);
+    await symlink(targetA, link);
+    const candidate = await makeCandidate({ path: link, kind: "application-support", risk: "confirmed", evidence: [{ source: "standard-path", detail: "test" }], runner });
+    await rm(link);
+    await symlink(targetB, link);
+
+    const app: AppIdentity = { displayName: "Example", bundleId: "com.example.app", path: join(paths.applications, "Example.app"), installSource: "standalone", packageReceipts: [] };
+    const manifest = await new QuarantineService(paths, runner).quarantine(app, [candidate!], []);
+    expect(manifest.status).toBe("partial");
+    expect(manifest.items[0]?.error).toContain("changed since scan");
+    // The original symlink target must be untouched.
+    expect(await pathExists(targetA)).toBeTrue();
+  });
+
+  test("fails the move when the file is replaced between scan and mutation", async () => {
+    const paths = await testPaths();
+    const runner = new BunCommandRunner();
+    const file = join(paths.userLibrary, "Preferences", "com.example.app.plist");
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, "v1");
+    const candidate = await makeCandidate({ path: file, kind: "preference", risk: "confirmed", evidence: [{ source: "standard-path", detail: "test" }], runner });
+    await rm(file);
+    await writeFile(file, "v1");
+
+    const app: AppIdentity = { displayName: "Example", bundleId: "com.example.app", path: join(paths.applications, "Example.app"), installSource: "standalone", packageReceipts: [] };
+    const manifest = await new QuarantineService(paths, runner).quarantine(app, [candidate!], []);
+    expect(manifest.status).toBe("partial");
+    expect(manifest.items[0]?.error).toContain("inode mismatch");
+  });
+
+  test("fails the move when the file type changes between scan and mutation", async () => {
+    const paths = await testPaths();
+    const runner = new BunCommandRunner();
+    const file = join(paths.userLibrary, "Preferences", "com.example.type.plist");
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, "v1");
+    const candidate = await makeCandidate({ path: file, kind: "preference", risk: "confirmed", evidence: [{ source: "standard-path", detail: "test" }], runner });
+    await rm(file);
+    await mkdir(file);
+
+    const app: AppIdentity = { displayName: "Example", bundleId: "com.example.app", path: join(paths.applications, "Example.app"), installSource: "standalone", packageReceipts: [] };
+    const manifest = await new QuarantineService(paths, runner).quarantine(app, [candidate!], []);
+    expect(manifest.status).toBe("partial");
+    expect(manifest.items[0]?.error).toContain("File type changed");
+  });
+
+  test("rejects a manifest whose session status was tampered with", async () => {
+    const { service, paths, app, candidates } = await fixture();
+    const manifest = await service.quarantine(app, candidates, []);
+    const manifestPath = join(paths.sessionRoot, `${manifest.id}.json`);
+    const raw = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    raw.status = "banana";
+    await writeFile(manifestPath, JSON.stringify(raw));
+    await expect(service.restore(manifest.id)).rejects.toThrow("status is invalid");
+  });
+
+  test("rejects a manifest whose item status was tampered with", async () => {
+    const { service, paths, app, candidates } = await fixture();
+    const manifest = await service.quarantine(app, candidates, []);
+    const manifestPath = join(paths.sessionRoot, `${manifest.id}.json`);
+    const raw = JSON.parse(await readFile(manifestPath, "utf8")) as { items: Array<{ status: string }> };
+    raw.items[0]!.status = "teleported";
+    await writeFile(manifestPath, JSON.stringify(raw));
+    await expect(service.restore(manifest.id)).rejects.toThrow("item status is invalid");
+  });
+
+  test("rejects restore when the manifest points outside supported roots", async () => {
+    const { service, paths, app, candidates } = await fixture();
+    const manifest = await service.quarantine(app, candidates, []);
+    const manifestPath = join(paths.sessionRoot, `${manifest.id}.json`);
+    const raw = JSON.parse(await readFile(manifestPath, "utf8")) as { items: Array<{ originalPath: string }> };
+    raw.items[0]!.originalPath = "/etc/evil";
+    await writeFile(manifestPath, JSON.stringify(raw));
+    await expect(service.restore(manifest.id)).rejects.toThrow();
   });
 });

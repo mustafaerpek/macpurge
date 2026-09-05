@@ -46,6 +46,12 @@ export interface Candidate {
   owner?: string;
   group?: string;
   mode?: string;
+  /** Snapshot of the containing device, re-checked before mutation. */
+  dev?: number;
+  /** Snapshot of the inode, re-checked before mutation. */
+  ino?: number;
+  /** Snapshot of the file type, re-checked before mutation. */
+  fileType?: "file" | "directory" | "symlink" | "other";
   requiresAdmin: boolean;
   selectedByDefault: boolean;
 }
