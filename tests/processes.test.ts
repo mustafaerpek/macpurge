@@ -7,14 +7,17 @@ class ProcessRunner implements CommandRunner {
   readonly calls: string[][] = [];
   private pgrepCount = 0;
 
-  constructor(private readonly pgrepOutput = `123 /Applications/Example.app/Contents/MacOS/Example\n${process.pid} /Applications/Example.app/Contents/MacOS/Example\n`) {}
+  constructor(
+    private readonly pgrepOutput = `123 /Applications/Example.app/Contents/MacOS/Example\n${process.pid} /Applications/Example.app/Contents/MacOS/Example\n`,
+    private readonly pgrepExitCode = 0,
+  ) {}
 
   async run(command: readonly string[]): Promise<CommandResult> {
     this.calls.push([...command]);
     if (command[0] === "/usr/bin/pgrep") {
       this.pgrepCount += 1;
       return this.pgrepCount === 1
-        ? { exitCode: 0, stdout: this.pgrepOutput, stderr: "" }
+        ? { exitCode: this.pgrepExitCode, stdout: this.pgrepOutput, stderr: this.pgrepExitCode === 0 ? "" : "fatal error" }
         : { exitCode: 1, stdout: "", stderr: "" };
     }
     if (command[0] === "/usr/bin/osascript" && command.at(-1)?.includes("exists login item")) {
@@ -42,6 +45,33 @@ describe("process handling", () => {
     expect(await applicationPids(app, runner)).toEqual([123]);
   });
 
+  test("matches only inside the bundle using pgrep -fl with an escaped ERE pattern", async () => {
+    const runner = new ProcessRunner();
+    await applicationPids(app, runner);
+    const call = runner.calls.find((command) => command[0] === "/usr/bin/pgrep")!;
+    expect(call[1]).toBe("-fil");
+    expect(call[2]).toBe(String.raw`Example\.app`);
+  });
+
+  test("escapes regex metacharacters in the application name", async () => {
+    const runner = new ProcessRunner();
+    const cPlusPlus: AppIdentity = { ...app, path: "/Applications/C++ App (v2).app" };
+    await applicationPids(cPlusPlus, runner);
+    const call = runner.calls.find((command) => command[0] === "/usr/bin/pgrep")!;
+    expect(call[2]).toBe(String.raw`C\+\+ App \(v2\)\.app`);
+  });
+
+  test("exit 1 means no running process, not an error", async () => {
+    const runner = new ProcessRunner("", 1);
+    const quiet = await applicationPids(app, runner);
+    expect(quiet).toEqual([]);
+  });
+
+  test("a pgrep lookup failure is surfaced instead of reported as not running", async () => {
+    const runner = new ProcessRunner("", 2);
+    await expect(applicationPids(app, runner)).rejects.toThrow("Process lookup failed");
+  });
+
   test("ignores command lines that merely contain the app path as an argument", async () => {
     const runner = new ProcessRunner(
       [
@@ -60,6 +90,12 @@ describe("process handling", () => {
     expect(isAppProcessCommand("/usr/bin/vim /Applications/Example.app/file", app.path)).toBeFalse();
     expect(isAppProcessCommand("/bin/zsh -c 'open /Applications/Example.app'", app.path)).toBeFalse();
     expect(isAppProcessCommand("", app.path)).toBeFalse();
+  });
+
+  test("accepts the real bundle root of a symlinked application", () => {
+    const realExecutable = "/Users/me/Caskroom/Example.app/Contents/MacOS/Example";
+    expect(isAppProcessCommand(realExecutable, ["/Applications/Example.app", "/Users/me/Caskroom/Example.app"])).toBeTrue();
+    expect(isAppProcessCommand(realExecutable, "/Applications/Example.app")).toBeFalse();
   });
 
   test("requests a normal bundle-id quit before force signals", async () => {

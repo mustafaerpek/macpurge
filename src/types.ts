@@ -115,6 +115,8 @@ export interface RuleProfile {
   bundleIds: string[];
   platform?: "darwin";
   candidates: RuleCandidate[];
+  /** Set during validation: built-in rules ship with the binary, user rules are untrusted input. */
+  origin: "builtin" | "user";
 }
 
 export interface SystemPaths {
