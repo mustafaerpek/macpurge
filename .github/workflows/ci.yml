@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Typecheck, test, build (macOS)
+    # Integration tests exercise real macOS behavior (pgrep, process spawns)
+    # and the build targets bun-darwin-arm64, so CI runs on macOS arm64.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.1"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run check
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      - name: CLI smoke test
+        run: |
+          ./dist/macpurge --help
+          ./dist/macpurge --version
