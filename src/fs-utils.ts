@@ -6,15 +6,45 @@ import { fileTypeOf, parentNeedsAdmin } from "./safety";
 import type { CommandRunner } from "./command";
 
 export async function hasMaclLock(path: string, runner: CommandRunner | null): Promise<boolean> {
-  if (runner) {
-    const result = await runner.run(["/bin/ls", "-lO", path]);
-    if (result.exitCode === 0) return result.stdout.includes("com.apple.macl");
-    return false;
-  }
-  const proc = Bun.spawn({ cmd: ["/bin/ls", "-l@", path], stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-  const [exitCode, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
-  if (exitCode !== 0) return false;
-  return stdout.includes("com.apple.macl");
+  // The macl xattr shows on EITHER the entry itself or its children,
+  // depending on flags used (-lO shows it on the parent row, -l@ on the
+  // child row). Probe the parent with both spellings; a listing denial
+  // (TCC on Containers/) is itself proof the entry cannot be moved.
+  const probeFlags = async (target: string): Promise<{ output: string | null; denied: boolean }> => {
+    const outputs: string[] = [];
+    let denied = false;
+    for (const flag of ["-lO", "-l@"]) {
+      let exitCode: number;
+      let stdout: string;
+      let stderr: string;
+      if (runner) {
+        const result = await runner.run(["/bin/ls", flag, target]);
+        exitCode = result.exitCode;
+        stdout = result.stdout;
+        stderr = result.stderr;
+      } else {
+        const proc = Bun.spawn({ cmd: ["/bin/ls", flag, target], stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      }
+      if (exitCode === 0) {
+        if (stdout.includes("com.apple.macl")) return { output: stdout, denied: false };
+        outputs.push(stdout);
+      } else if (stderr.includes("Operation not permitted") || stderr.includes("EPERM")) {
+        denied = true;
+      }
+    }
+    return outputs.length > 0 ? { output: outputs.join("\n"), denied } : { output: null, denied };
+  };
+  const self = await probeFlags(path);
+  if (self.output?.includes("com.apple.macl")) return true;
+  const children = await probeFlags(`${path}/Data`);
+  if (children.output?.includes("com.apple.macl")) return true;
+  // A container whose Data/ cannot even be listed is unmovable by definition
+  // (the earlier rename probe proved EPERM) — regardless of xattr visibility.
+  if (path.includes("/Containers/") && children.denied) return true;
+  if (self.output !== null) return false;
+  if (self.denied) return children.denied;
+  return false;
 }
 
 export async function pathExists(path: string): Promise<boolean> {
@@ -86,6 +116,8 @@ export async function makeCandidate(input: {
         fileType: fileTypeOf(info),
       });
     }
+    // Dangling symlink or entry vanishing mid-scan: skip instead of crashing.
+    if (code === "ENOENT") return undefined;
     throw error;
   }
   const requiresAdmin = await parentNeedsAdmin(input.path);

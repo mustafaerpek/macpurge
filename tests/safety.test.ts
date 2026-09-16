@@ -75,7 +75,8 @@ describe("path safety", () => {
     await writeFile(join(container, "data"), "x");
     const locked = new FakeCommandRunner([
       { match: (c) => c[0] === "/usr/bin/du", result: { exitCode: 0, stdout: "4\tplace\n", stderr: "" } },
-      { match: (c) => c[0] === "/bin/ls", result: { exitCode: 0, stdout: "drwx------@ 1 u g - 64 Jan 1 00:00 Foo\n\tcom.apple.macl\t -1 \n", stderr: "" } },
+      { match: (c) => c[0] === "/bin/ls" && c[2] === container, result: { exitCode: 0, stdout: "drwx------ 1 u g - 64 Jan 1 00:00 Foo\n", stderr: "" } },
+      { match: (c) => c[0] === "/bin/ls", result: { exitCode: 0, stdout: "drwx------@ 1 u g - 64 Jan 1 00:00 Data\n\tcom.apple.macl\t -1 \n", stderr: "" } },
     ]);
     const candidate = await makeCandidate({ path: container, kind: "container", risk: "confirmed", evidence: [], runner: locked, checkMacl: true });
     expect(candidate?.risk).toBe("protected");

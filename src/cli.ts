@@ -264,7 +264,7 @@ async function quarantineClean(
     }
     return 0;
   }
-  const manifest = await activity("Moving cleanup candidates into quarantine", "Quarantine transaction complete", rich, () =>
+  const manifest = await activity("Moving cleanup candidates into quarantine", "Quarantine transaction complete", false, () =>
     deps.quarantine.quarantine(cleanIdentity(), nonTrash, []),
   );
   const warnings = trashDetail ? [...manifest.warnings, trashDetail] : manifest.warnings;
@@ -282,7 +282,7 @@ async function commandRestore(deps: CliDeps, parsed: Parsed): Promise<number> {
   const id = await deps.quarantine.store.resolve(raw);
   const existing = await deps.quarantine.store.load(id);
   await typedConfirmation(existing.app.displayName, mutationConfirmation(parsed, existing.app.displayName));
-  const manifest = await activity("Restoring quarantined files", "Restore transaction complete", parsed.values.json !== true, () => deps.quarantine.restore(id));
+  const manifest = await activity("Restoring quarantined files", "Restore transaction complete", false, () => deps.quarantine.restore(id));
   if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else printSessionReport(manifest);
   return manifest.status === "restored" ? 0 : 4;
@@ -323,7 +323,7 @@ async function commandPurge(deps: CliDeps, parsed: Parsed): Promise<number> {
   printSessionReport(existing);
   if (parsed.values.json !== true) printNextSteps(id, existing.app.displayName);
   await typedConfirmation(existing.app.displayName, mutationConfirmation(parsed, existing.app.displayName));
-  const manifest = await activity("Permanently purging this quarantine", "Permanent purge complete", parsed.values.json !== true, () => deps.quarantine.purge(id));
+  const manifest = await activity("Permanently purging this quarantine", "Permanent purge complete", false, () => deps.quarantine.purge(id));
   if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else printSessionReport(manifest);
   return manifest.status === "purged" ? 0 : 4;
