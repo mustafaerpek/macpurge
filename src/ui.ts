@@ -159,16 +159,17 @@ export function printDeferred(actions: DeferredAction[]): void {
 
 export function printCleanReport(result: CleanResult, options: { summaryOnly?: boolean } = {}): void {
   printBanner("Reclaim space. Keep what matters.");
-  const totalBytes = result.items.reduce((sum, item) => sum + item.sizeBytes, 0);
+  const finderBytes = (result as CleanResult & { trashInventory?: { totalBytes: number } }).trashInventory?.totalBytes ?? 0;
+  const totalBytes = result.items.reduce((sum, item) => sum + item.sizeBytes, 0) + finderBytes;
   printSection("Cleanup plan", `${result.items.length} items · ${humanBytes(totalBytes)}`);
   for (const category of result.categories) {
     if (category.itemCount === 0 && category.id !== "trash") continue;
     if (category.id === "trash") {
-      const trash = (result as CleanResult & { trashInventory?: { count: number; unavailable: boolean } }).trashInventory;
+      const trash = (result as CleanResult & { trashInventory?: { count: number; totalBytes: number; unavailable: boolean } }).trashInventory;
       const detail = trash?.unavailable
         ? "Finder inventory unavailable"
         : trash && trash.count > 0
-          ? `${trash.count} item(s) in Finder Trash · emptied permanently, never quarantined`
+          ? `${trash.count} item(s)${trash.totalBytes > 0 ? ` · ${humanBytes(trash.totalBytes)}` : ""} in Finder Trash · emptied permanently, never quarantined`
           : "Trash is empty";
       printSection(category.title, detail);
       if (!options.summaryOnly && category.itemCount > 0) {
@@ -204,6 +205,10 @@ export function printCleanItem(item: CleanItem): void {
 export function cleanCategoryLabel(title: string, count: number, bytes: number, selected: boolean): string {
   const box = selected ? pc.green("●") : pc.dim("○");
   return `${box} ${title}  ${pc.dim(`${count} · ${humanBytes(bytes)}`)}`;
+}
+
+export function cleanItemChoiceLabel(item: CleanItem): string {
+  return `${basename(item.path)}  ${pc.dim(humanBytes(item.sizeBytes))}`;
 }
 
 export function printSessionReport(manifest: SessionManifest): void {
@@ -327,10 +332,12 @@ export function printHelp(): void {
     ["--yes, -y", "Skip typed + process confirmations (scripts)"],
     ["--confirm <text>", "Non-interactive typed confirmation"],
     ["--include <id>", "Also quarantine one possible item (repeatable)"],
-    ["--include-possible", "Quarantine every possible item"],
+    ["--include-possible", "Quarantine every possible/review item"],
     ["--category <id>", "Clean only these categories (repeatable)"],
     ["--all-categories", "Include orphaned leftovers in clean"],
-    ["--whitelist <path|id>", "Never offer this path or category again"],
+    ["--whitelist <path|id>", "Never offer this path or category again (repeatable)"],
+    ["--whitelist-list", "Show the clean whitelist"],
+    ["--whitelist-remove <entry>", "Stop skipping this path or category (repeatable)"],
     ["--dry-run", "Preview uninstall, clean, or purge without changing anything"],
     ["--summary", "Show counts instead of the full file list"],
     ["--no-deep", "Skip the bounded filesystem sweep"],

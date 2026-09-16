@@ -8,7 +8,7 @@ import { isProtectedAppleApp } from "./app-policy";
 import { APP_VERSION } from "./version";
 import { loadRules, rulesForApp } from "./rules";
 import { scanApplication } from "./scanner";
-import { addWhitelistCategory, addWhitelistPath, CLEAN_CATEGORIES, cleanIdentity, emptyTrash, loadCleanWhitelist, saveCleanWhitelist, scanClean, selectCleanItems } from "./clean";
+import { addWhitelistCategory, addWhitelistPath, CLEAN_CATEGORIES, cleanIdentity, emptyTrash, loadCleanWhitelist, removeWhitelistEntry, saveCleanWhitelist, scanClean, selectCleanItems } from "./clean";
 import { defaultSystemPaths } from "./system-paths";
 import { closeApplication } from "./processes";
 import { QuarantineService } from "./quarantine";
@@ -28,6 +28,7 @@ import {
 } from "./cli-helpers";
 import {
   cleanCategoryLabel,
+  cleanItemChoiceLabel,
   printApplicationList,
   printBanner,
   printCleanReport,
@@ -152,29 +153,65 @@ function parseCleanCategories(values: string[] | undefined, includeAll: boolean)
   return CLEAN_CATEGORIES.filter((category) => category.id !== "orphaned-leftovers").map((category) => category.id);
 }
 
-async function commandCleanWhitelist(deps: CliDeps, raw: string | boolean | undefined, json: boolean): Promise<number> {
-  const value = typeof raw === "string" ? raw : undefined;
-  if (!value) throw new CliError("clean --whitelist needs a path (~/..., /...) or a category id", 2);
-  const whitelist = await loadCleanWhitelist(deps.paths);
+async function commandCleanWhitelist(deps: CliDeps, parsed: Parsed): Promise<number> {
+  const json = parsed.values.json === true;
   const known = new Set(CLEAN_CATEGORIES.map((category) => category.id));
-  const updated = known.has(value as CleanCategoryId)
-    ? addWhitelistCategory(whitelist, value as CleanCategoryId)
-    : addWhitelistPath(whitelist, value);
-  await saveCleanWhitelist(deps.paths, updated);
-  const message = `Whitelisted ${value}. It will be skipped by future clean scans.`;
-  if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", whitelist: updated, warnings: [], errors: [] }, true);
+  if (parsed.values["whitelist-list"]) {
+    const whitelist = await loadCleanWhitelist(deps.paths);
+    if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", whitelist, warnings: [], errors: [] }, true);
+    else {
+      printBanner("Paths and categories clean skips.");
+      printSection("Whitelist", `${whitelist.categories.length} categories · ${whitelist.paths.length} paths`);
+      for (const id of whitelist.categories) console.log(`  ◆ ${id}`);
+      for (const path of whitelist.paths) console.log(`  ◇ ${path}`);
+      if (whitelist.categories.length === 0 && whitelist.paths.length === 0) {
+        console.log("  ○ Whitelist is empty. Add entries with --whitelist <path|category-id>.");
+      }
+    }
+    return 0;
+  }
+  const removals = parsed.values["whitelist-remove"] ?? [];
+  const additions = parsed.values.whitelist ?? [];
+  if (removals.length === 0 && additions.length === 0) {
+    throw new CliError("clean whitelist needs --whitelist <path|category-id>, --whitelist-remove <entry>, or --whitelist-list", 2);
+  }
+  let whitelist = await loadCleanWhitelist(deps.paths);
+  const removed: string[] = [];
+  for (const entry of removals) {
+    const before = whitelist.categories.length + whitelist.paths.length;
+    whitelist = removeWhitelistEntry(whitelist, entry);
+    if (whitelist.categories.length + whitelist.paths.length !== before) removed.push(entry);
+  }
+  const added: string[] = [];
+  for (const value of additions) {
+    if (known.has(value as CleanCategoryId)) {
+      const next = addWhitelistCategory(whitelist, value as CleanCategoryId);
+      if (next !== whitelist) added.push(value);
+      whitelist = next;
+    } else {
+      const next = addWhitelistPath(whitelist, value);
+      if (next !== whitelist) added.push(value);
+      whitelist = next;
+    }
+  }
+  await saveCleanWhitelist(deps.paths, whitelist);
+  const summary = [
+    added.length > 0 ? `added ${added.join(", ")}` : "",
+    removed.length > 0 ? `removed ${removed.join(", ")}` : "",
+  ].filter(Boolean).join("; ") || "no changes";
+  if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", whitelist, added, removed, warnings: [], errors: [] }, true);
   else {
     printBanner("This stays out of your way from now on.");
-    printSection("Whitelist", message);
-    printKeyValue("Categories", updated.categories.join(", ") || "—");
-    printKeyValue("Paths", String(updated.paths.length));
+    printSection("Whitelist", summary);
+    printKeyValue("Categories", whitelist.categories.join(", ") || "—");
+    printKeyValue("Paths", whitelist.paths.join(", ") || "—");
   }
   return 0;
 }
 
 async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
-  if (parsed.values.whitelist !== undefined) {
-    return commandCleanWhitelist(deps, parsed.values.whitelist, parsed.values.json === true);
+  if (parsed.values.whitelist !== undefined || parsed.values["whitelist-remove"] !== undefined || parsed.values["whitelist-list"]) {
+    return commandCleanWhitelist(deps, parsed);
   }
   const json = parsed.values.json === true;
   const rich = !json;
@@ -183,7 +220,8 @@ async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
   const result = await activity("Scanning caches, logs, trash, and leftovers", "Cleanup scan complete", rich, () =>
     scanClean(deps.paths, deps.runner, categories === undefined ? {} : { categories }),
   );
-  const selected = selectCleanItems(result.items, categories ?? result.categories.map((category) => category.id), parsed.values.include ?? []);
+  const includePossible = parsed.values["include-possible"] === true;
+  const selected = selectCleanItems(result.items, categories ?? result.categories.map((category) => category.id), parsed.values.include ?? [], includePossible);
   if (selected.length === 0) {
     if (json) output({ ...result, selectedItemIds: [], dryRun: parsed.values["dry-run"] === true }, true);
     else {
@@ -203,7 +241,7 @@ async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
   if (rich && !assumeYes) {
     const prompts = await import("@clack/prompts");
     printCleanReport(result, { summaryOnly: true });
-    const picked = await prompts.multiselect({
+    const categoryPicked = await prompts.multiselect({
       message: "Select cleanup categories",
       options: result.categories.filter((category) => category.itemCount > 0).map((category) => ({
         value: category.id,
@@ -213,13 +251,43 @@ async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
       initialValues: result.categories.filter((category) => category.selectedByDefault && category.itemCount > 0).map((category) => category.id),
       required: false,
     });
-    if (prompts.isCancel(picked)) {
+    if (prompts.isCancel(categoryPicked)) {
       prompts.cancel("Cancelled. No changes were made.");
       return 3;
     }
-    const enabled = new Set((picked as string[]).map(String));
-    const rescoped = selected.filter((item) => enabled.has(item.category));
-    if (rescoped.length === 0) throw new CliError("Nothing selected: no cleanup categories were chosen", 5);
+    const enabled = new Set((categoryPicked as string[]).map(String));
+    const reviewItems = result.items.filter((item) => enabled.has(item.category) && item.risk === "possible" && item.category !== "trash");
+    let extraIds: string[] = [...(parsed.values.include ?? [])];
+    if (reviewItems.length > 0) {
+      const scope = await prompts.confirm({
+        message: `Include all ${reviewItems.length} review item(s), or pick individually?`,
+        initialValue: false,
+      });
+      if (prompts.isCancel(scope)) {
+        prompts.cancel("Cancelled. No changes were made.");
+        return 3;
+      }
+      if (scope === true) {
+        extraIds = [...extraIds, ...reviewItems.map((item) => item.id)];
+      } else {
+        const itemPicked = await prompts.multiselect({
+          message: "Select review items to include",
+          options: reviewItems.map((item) => ({
+            value: item.id,
+            label: cleanItemChoiceLabel(item),
+            hint: item.path,
+          })),
+          required: false,
+        });
+        if (prompts.isCancel(itemPicked)) {
+          prompts.cancel("Cancelled. No changes were made.");
+          return 3;
+        }
+        extraIds = [...extraIds, ...(itemPicked as string[]).map(String)];
+      }
+    }
+    const rescoped = selectCleanItems(result.items, [...enabled] as CleanCategoryId[], extraIds, includePossible);
+    if (rescoped.length === 0) throw new CliError("Nothing selected: no cleanup candidates were chosen", 5);
     return quarantineClean(deps, parsed, result, rescoped, assumeYes);
   }
   return quarantineClean(deps, parsed, result, selected, assumeYes);

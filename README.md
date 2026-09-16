@@ -98,7 +98,10 @@ Or reclaim safe space without touching any installed app:
 ```bash
 macpurge clean --dry-run --summary
 macpurge clean --category user-caches --category user-logs --yes
-macpurge clean --whitelist ~/Library/Caches/com.example.keep
+macpurge clean --whitelist ~/Library/Caches/com.example.keep --whitelist user-logs
+macpurge clean --whitelist-list
+macpurge clean --whitelist-remove user-logs
+macpurge clean --all-categories --include-possible --dry-run
 ```
 
 After quarantine, every mutating command prints copy-paste recovery choices:
@@ -134,10 +137,12 @@ macpurge verify "Example"   # Rescan for remaining files
 | `--dry-run` | Preview `uninstall`, `clean`, or `purge` without moving or deleting anything |
 | `--yes`, `-y` | Skip typed and process confirmations (scripts and interactive runs) |
 | `--include <candidate-id>` | Explicitly include one review candidate; may be repeated |
-| `--include-possible` | Quarantine every review candidate without listing IDs |
+| `--include-possible` | Quarantine every review candidate without listing IDs (uninstall + clean) |
 | `--category <id>` | Clean only these categories; repeatable (`trash`, `user-caches`, `user-logs`, `browser-caches`, `xcode-derived-data`, `dev-caches`, `orphaned-leftovers`) |
 | `--all-categories` | Include orphaned leftovers in clean (off by default) |
-| `--whitelist <path\|id>` | Never offer this path or category in future clean scans |
+| `--whitelist <path\|id>` | Never offer this path or category in future clean scans; repeatable |
+| `--whitelist-list` | Show the clean whitelist |
+| `--whitelist-remove <entry>` | Stop skipping this path or category; repeatable |
 | `--summary` | Show counts instead of the full file list |
 | `--confirm <exact-value>` | Supply the exact confirmation in non-interactive use |
 | `--help`, `-h` | Show the command guide |
@@ -235,9 +240,11 @@ planned → quarantining → quarantined → restored
 
 Hard never-delete rules apply to every scan: local model stores (`~/.ollama`, `~/.cache/huggingface`), AI chat and memory directories (`.codex/sessions`, `.claude/projects`, `.grok/sessions`), dependency trees anywhere in the tree, and cache-named system stores such as `com.apple.e5rt.e5bundlecache`. Anything matching is silently excluded—never offered, never counted.
 
-Trash is special: without Full Disk Access even the owner cannot list `~/.Trash` directly (`EPERM`), so macpurge inventories it through Finder and empties it with Finder's own empty command. That action is permanent—it cannot enter quarantine or be restored. Everything else quarantines normally. `doctor` reports whether direct Trash reads work (`Direct read` vs `Via Finder`) so the fallback is never a surprise.
+Trash is special: without Full Disk Access even the owner cannot list `~/.Trash` directly (`EPERM`), so macpurge inventories it through Finder—count, names, and best-effort total size via Finder's physical size—and empties it with Finder's own empty command. That action is permanent—it cannot enter quarantine or be restored. Everything else quarantines normally. `doctor` reports whether direct Trash reads work (`Direct read` vs `Via Finder`) so the fallback is never a surprise.
 
-`clean --whitelist <path|category-id>` persists to `~/.config/macpurge/clean-whitelist.json` (`0600`). Whitelisted entries are reported as warnings and skipped on every future scan.
+`clean --whitelist <path|category-id>` (repeatable) persists to `~/.config/macpurge/clean-whitelist.json` (`0600`). Whitelisted entries are reported as warnings and skipped on every future scan. Manage it with `clean --whitelist-list` and `clean --whitelist-remove <entry>`.
+
+Clean sessions quarantine under a synthetic `System Cleanup` identity (`macpurge.clean`) so `history`, `restore latest`, and `purge latest` work exactly like uninstall sessions. The placeholder path is exempt from path validation by bundle id; every quarantined item still passes full revalidation.
 
 ## What gets scanned?
 

@@ -168,6 +168,8 @@ function planCleanItem(
 export interface TrashInventory {
   count: number;
   names: string[];
+  /** Best-effort total size in bytes (0 when Finder cannot report it). */
+  totalBytes: number;
   /** True when Finder answered but the list was truncated for display. */
   truncated: boolean;
   /** True when even Finder could not read Trash (Automation denied). */
@@ -177,17 +179,20 @@ export interface TrashInventory {
 export async function trashInventory(runner: CommandRunner): Promise<TrashInventory> {
   const namesResult = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to get name of every item of trash']);
   if (namesResult.exitCode !== 0) {
-    return { count: 0, names: [], truncated: false, unavailable: true };
+    return { count: 0, names: [], totalBytes: 0, truncated: false, unavailable: true };
   }
   const raw = namesResult.stdout.trim();
   // Finder returns "missing value" for an empty Trash.
-  if (!raw || raw === "missing value") return { count: 0, names: [], truncated: false, unavailable: false };
+  if (!raw || raw === "missing value") return { count: 0, names: [], totalBytes: 0, truncated: false, unavailable: false };
   const countResult = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to count items of trash']);
   const count = Number.parseInt(countResult.stdout.trim(), 10);
   const names = raw.split(/,\s*/u).map((name) => name.trim()).filter(Boolean);
+  const sizeResult = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to get physical size of trash']);
+  const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
   return {
     count: Number.isFinite(count) ? count : names.length,
     names: names.slice(0, 8),
+    totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : 0,
     truncated: names.length > 8,
     unavailable: false,
   };
@@ -657,19 +662,22 @@ export function cleanIdentity(): AppIdentity {
   return {
     displayName: "System Cleanup",
     bundleId: "macpurge.clean",
+    // Synthetic pseudo-app: there is no bundle on disk. The manifest store
+    // exempts this bundle id from literal-path validation (see validate()).
     path: "/Applications/macpurge-clean",
     installSource: "standalone",
     packageReceipts: [],
   };
 }
 
-export function selectCleanItems(items: CleanItem[], categories: CleanCategoryId[], ids: string[]): CleanItem[] {
+export function selectCleanItems(items: CleanItem[], categories: CleanCategoryId[], ids: string[], includePossible = false): CleanItem[] {
   const byId = new Map(items.map((item) => [item.id, item]));
   const enabled = new Set(categories);
-  const selected = items.filter((item) => enabled.has(item.category));
+  const selected = items.filter((item) => enabled.has(item.category) && (item.risk === "confirmed" || includePossible || item.category === "trash"));
   for (const id of ids) {
     const item = byId.get(id);
     if (!item) throw new Error(`Unknown clean item id: ${id}`);
+    if (item.risk === "protected") throw new Error(`Protected clean item cannot be included: ${item.path}`);
     if (!selected.some((entry) => entry.id === item.id)) selected.push(item);
   }
   return selected;

@@ -31,7 +31,9 @@ export interface Parsed {
     "include-possible"?: boolean;
     category?: string[];
     "all-categories"?: boolean;
-    whitelist?: string | boolean;
+    whitelist?: string[];
+    "whitelist-list"?: boolean;
+    "whitelist-remove"?: string[];
     confirm?: string;
   };
 }
@@ -53,7 +55,9 @@ export function parse(argv: string[]): Parsed {
       "include-possible": { type: "boolean" },
       category: { type: "string", multiple: true },
       "all-categories": { type: "boolean" },
-      whitelist: { type: "string" },
+      whitelist: { type: "string", multiple: true },
+      "whitelist-list": { type: "boolean" },
+      "whitelist-remove": { type: "string", multiple: true },
       confirm: { type: "string" },
     },
   });
