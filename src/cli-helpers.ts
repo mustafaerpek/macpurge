@@ -78,6 +78,12 @@ export async function activity<T>(startMessage: string, doneMessage: string, ena
   }
 }
 
+export async function confirmSudo(message = "Administrator access is needed for some items. Continue?"): Promise<boolean> {
+  if (!process.stdin.isTTY) return true;
+  const answer = await confirm({ message, initialValue: true });
+  return !isCancel(answer) && answer === true;
+}
+
 export async function typedConfirmation(expected: string, provided?: string): Promise<void> {
   if (provided !== undefined) {
     if (provided !== expected) throw new CliError(`Confirmation does not match exactly: ${expected}`, 2);

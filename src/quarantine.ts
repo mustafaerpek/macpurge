@@ -49,6 +49,9 @@ export class QuarantineService {
 
   private async move(source: string, destination: string, admin: boolean): Promise<void> {
     if (admin) {
+      // sudo reads its password from the terminal, not stdin: without an
+      // explicit stdio binding the prompt inherits whatever the last clack
+      // spinner left behind and fails with "unable to read password".
       const prepared = await this.runner.run(["/usr/bin/sudo", "/bin/mkdir", "-p", dirname(destination)], { interactive: true });
       if (prepared.exitCode !== 0) throw new Error(`sudo mkdir failed with exit code ${prepared.exitCode}`);
     } else {
@@ -62,7 +65,12 @@ export class QuarantineService {
       // -n never overwrites an existing file; a silent skip is detected by
       // requiring the source to be gone afterwards.
       const result = await this.runner.run(["/usr/bin/sudo", "/bin/mv", "-n", source, destination], { interactive: true });
-      if (result.exitCode !== 0) throw new Error(`sudo mv failed with exit code ${result.exitCode}`);
+      if (result.exitCode !== 0) {
+        const hint = result.stderr.includes("a password is required")
+          ? " (no cached credential and no terminal to ask for one — run sudo -v first, then retry)"
+          : "";
+        throw new Error(`sudo mv failed with exit code ${result.exitCode}${hint}`);
+      }
       if (await pathExists(source)) throw new SafetyError(`Move did not complete; destination may already exist: ${destination}`);
     } else {
       await rename(source, destination);

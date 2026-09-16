@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { BunCommandRunner } from "./command";
 import { listApplications, readAppIdentity, selectApplication } from "./apps";
 import { isProtectedAppleApp } from "./app-policy";
 import { APP_VERSION } from "./version";
 import { loadRules, rulesForApp } from "./rules";
 import { scanApplication } from "./scanner";
-import { addWhitelistCategory, addWhitelistPath, CLEAN_CATEGORIES, cleanIdentity, loadCleanWhitelist, saveCleanWhitelist, scanClean, selectCleanItems } from "./clean";
+import { addWhitelistCategory, addWhitelistPath, CLEAN_CATEGORIES, cleanIdentity, emptyTrash, loadCleanWhitelist, saveCleanWhitelist, scanClean, selectCleanItems } from "./clean";
 import { defaultSystemPaths } from "./system-paths";
 import { closeApplication } from "./processes";
 import { QuarantineService } from "./quarantine";
@@ -16,6 +16,7 @@ import { SCHEMA_VERSION, type AppIdentity, type CleanCategoryId, type ScanResult
 import { interactive } from "./interactive";
 import {
   activity,
+  confirmSudo,
   forceConfirmer,
   output,
   parse,
@@ -113,7 +114,14 @@ async function commandUninstall(deps: CliDeps, parsed: Parsed): Promise<number> 
   await typedConfirmation(app.displayName, mutationConfirmation(parsed, app.displayName));
   const closed = await closeApplication(app, deps.runner, forceConfirmer(assumeYes));
   if (!closed) throw new CliError("Application is still running; no files were moved", 3);
-  const manifest = await activity("Moving verified files into quarantine", "Quarantine transaction complete", rich, () => deps.quarantine.quarantine(app, selected, scan.deferredActions));
+  if (selected.some((item) => item.requiresAdmin) && rich && !assumeYes) {
+    const sudoCheck = await deps.runner.run(["/usr/bin/sudo", "-n", "/usr/bin/true"]);
+    if (sudoCheck.exitCode !== 0) {
+      printWarning("Some items need administrator access. macOS will ask for your password now — approve it in the terminal prompt.");
+      if (!(await confirmSudo())) throw new CliError("Cancelled", 3);
+    }
+  }
+  const manifest = await activity("Moving verified files into quarantine", "Quarantine transaction complete", false, () => deps.quarantine.quarantine(app, selected, scan.deferredActions));
   if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else {
     printSessionReport(manifest);
@@ -218,20 +226,49 @@ async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
 async function quarantineClean(
   deps: CliDeps,
   parsed: Parsed,
-  result: import("./types").CleanResult,
+  result: import("./types").CleanResult & { trashInventory?: import("./clean").TrashInventory },
   selected: import("./types").CleanItem[],
   assumeYes: boolean,
 ): Promise<number> {
   const rich = parsed.values.json !== true;
+  const trashSelected = selected.some((item) => item.category === "trash" || item.id === "finder:trash");
+  const trashCount = result.trashInventory?.count ?? 0;
+  const trashUnavailable = result.trashInventory?.unavailable === true;
+  const nonTrash = selected.filter((item) => item.category !== "trash");
   if (rich) printCleanReport({ ...result, items: selected }, { summaryOnly: parsed.values.summary === true });
+  if (trashSelected && !trashUnavailable && trashCount > 0) {
+    printWarning(`Trash (${trashCount} item(s)) will be emptied permanently via Finder — this cannot enter quarantine or be restored.`);
+  }
   await typedConfirmation("System Cleanup", mutationConfirmation(parsed, "System Cleanup"));
   void assumeYes;
+  let trashDetail: string | undefined;
+  if (trashSelected && !trashUnavailable && trashCount > 0) {
+    const emptied = await activity("Emptying Trash via Finder", "Trash emptied", rich, () => emptyTrash(deps.runner));
+    trashDetail = emptied.detail;
+    if (!emptied.emptied) {
+      if (parsed.values.json) {
+        output({ schemaVersion: SCHEMA_VERSION, status: "error", trashEmptied: false, trashDetail, warnings: result.warnings, errors: [...result.errors, trashDetail] }, true);
+      } else {
+        printError(`Trash was not emptied: ${trashDetail}`);
+      }
+      if (nonTrash.length === 0) return 1;
+    } else if (rich) {
+      printSuccess(trashDetail);
+    }
+  }
+  if (nonTrash.length === 0) {
+    if (parsed.values.json) {
+      output({ schemaVersion: SCHEMA_VERSION, status: "ok", trashEmptied: trashDetail !== undefined, trashDetail, warnings: result.warnings, errors: result.errors }, true);
+    }
+    return 0;
+  }
   const manifest = await activity("Moving cleanup candidates into quarantine", "Quarantine transaction complete", rich, () =>
-    deps.quarantine.quarantine(cleanIdentity(), selected, []),
+    deps.quarantine.quarantine(cleanIdentity(), nonTrash, []),
   );
-  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
+  const warnings = trashDetail ? [...manifest.warnings, trashDetail] : manifest.warnings;
+  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, trashEmptied: trashDetail !== undefined, trashDetail, warnings, errors: manifest.errors }, true);
   else {
-    printSessionReport(manifest);
+    printSessionReport({ ...manifest, warnings });
     printNextSteps(manifest.id, manifest.app.displayName);
   }
   return manifest.status === "quarantined" ? 0 : 4;
@@ -308,8 +345,16 @@ async function commandDoctor(deps: CliDeps, json: boolean): Promise<number> {
   } catch {
     quarantineWritable = false;
   }
+  let trashReadable = true;
+  try {
+    await access(join(deps.paths.home, ".Trash"), constants.R_OK | constants.X_OK);
+  } catch {
+    trashReadable = false;
+  }
   const sudo = await deps.runner.run(["/usr/bin/sudo", "-n", "/usr/bin/true"]);
   const status: "ok" | "error" = process.platform === "darwin" && process.arch === "arm64" && quarantineWritable && Object.values(tools).every(Boolean) ? "ok" : "error";
+  const warnings = sudo.exitCode === 0 ? [] : ["Administrator password will be requested only when a selected target requires it."];
+  if (!trashReadable) warnings.push("Trash is not directly readable (Full Disk Access not granted). Clean reads Trash through Finder and empties it permanently via Finder.");
   const report = {
     schemaVersion: SCHEMA_VERSION,
     status,
@@ -319,8 +364,9 @@ async function commandDoctor(deps: CliDeps, json: boolean): Promise<number> {
     paths: deps.paths,
     tools,
     quarantineWritable,
+    trashDirectlyReadable: trashReadable,
     sudoCredentialCached: sudo.exitCode === 0,
-    warnings: sudo.exitCode === 0 ? [] : ["Administrator password will be requested only when a selected target requires it."],
+    warnings,
     errors: [],
   };
   if (json) output(report, true);

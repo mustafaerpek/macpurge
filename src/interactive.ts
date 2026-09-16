@@ -4,8 +4,8 @@ import { diskUsage, humanBytes } from "./fs-utils";
 import { isProtectedAppleApp } from "./app-policy";
 import { scanApplication } from "./scanner";
 import { closeApplication } from "./processes";
-import { activity, forceConfirmer, selectedCandidates, typedConfirmation, CliError, type CliDeps } from "./cli-helpers";
-import { appChoiceLabel, candidateChoiceLabel, printBanner, printRiskSummary, printScanReport, sessionOutro } from "./ui";
+import { activity, confirmSudo, forceConfirmer, selectedCandidates, typedConfirmation, CliError, type CliDeps } from "./cli-helpers";
+import { appChoiceLabel, candidateChoiceLabel, printBanner, printRiskSummary, printScanReport, printWarning, sessionOutro } from "./ui";
 
 export async function interactive(deps: CliDeps, options: { confirm?: string | undefined; assumeYes?: boolean } = {}): Promise<number> {
   if (!process.stdin.isTTY) throw new CliError("Interactive mode requires a TTY", 2);
@@ -104,7 +104,14 @@ export async function interactive(deps: CliDeps, options: { confirm?: string | u
   await typedConfirmation(app.displayName, provided);
   const closed = await closeApplication(app, deps.runner, forceConfirmer(assumeYes));
   if (!closed) throw new CliError("Application is still running; no files were moved", 3);
-  const manifest = await activity("Moving verified files into quarantine", "Quarantine transaction complete", true, () => deps.quarantine.quarantine(app, chosen, scan.deferredActions));
+  if (chosen.some((item) => item.requiresAdmin) && !assumeYes) {
+    const sudoCheck = await deps.runner.run(["/usr/bin/sudo", "-n", "/usr/bin/true"]);
+    if (sudoCheck.exitCode !== 0) {
+      printWarning("Some items need administrator access. macOS will ask for your password now — approve it in the terminal prompt.");
+      if (!(await confirmSudo())) throw new CliError("Cancelled", 3);
+    }
+  }
+  const manifest = await activity("Moving verified files into quarantine", "Quarantine transaction complete", false, () => deps.quarantine.quarantine(app, chosen, scan.deferredActions));
   outro(sessionOutro(manifest));
   return manifest.status === "quarantined" ? 0 : 4;
 }

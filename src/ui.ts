@@ -162,7 +162,22 @@ export function printCleanReport(result: CleanResult, options: { summaryOnly?: b
   const totalBytes = result.items.reduce((sum, item) => sum + item.sizeBytes, 0);
   printSection("Cleanup plan", `${result.items.length} items · ${humanBytes(totalBytes)}`);
   for (const category of result.categories) {
-    if (category.itemCount === 0) continue;
+    if (category.itemCount === 0 && category.id !== "trash") continue;
+    if (category.id === "trash") {
+      const trash = (result as CleanResult & { trashInventory?: { count: number; unavailable: boolean } }).trashInventory;
+      const detail = trash?.unavailable
+        ? "Finder inventory unavailable"
+        : trash && trash.count > 0
+          ? `${trash.count} item(s) in Finder Trash · emptied permanently, never quarantined`
+          : "Trash is empty";
+      printSection(category.title, detail);
+      if (!options.summaryOnly && category.itemCount > 0) {
+        for (const item of result.items.filter((entry) => entry.category === category.id)) {
+          printCleanItem(item);
+        }
+      }
+      continue;
+    }
     printSection(category.title, `${category.itemCount} items · ${humanBytes(category.totalBytes)} · ${category.description}`);
     if (!options.summaryOnly) {
       for (const item of result.items.filter((entry) => entry.category === category.id)) {
@@ -243,6 +258,7 @@ export function printDoctor(report: {
   tools: Record<string, boolean>;
   quarantineWritable: boolean;
   sudoCredentialCached: boolean;
+  trashDirectlyReadable?: boolean;
   warnings: string[];
 }): void {
   printBanner("System readiness and safety checks.");
@@ -251,6 +267,9 @@ export function printDoctor(report: {
   printKeyValue("Runtime", `Bun ${report.bunVersion}`);
   printKeyValue("Quarantine", report.quarantineWritable ? pc.green("Writable") : pc.red("Unavailable"));
   printKeyValue("Admin", report.sudoCredentialCached ? pc.green("Ready") : pc.dim("On demand"));
+  if (report.trashDirectlyReadable !== undefined) {
+    printKeyValue("Trash", report.trashDirectlyReadable ? pc.green("Direct read") : pc.yellow("Via Finder"));
+  }
   printSection("macOS tools", `${Object.values(report.tools).filter(Boolean).length}/${Object.keys(report.tools).length} available`);
   const entries = Object.entries(report.tools);
   for (let index = 0; index < entries.length; index += 3) {

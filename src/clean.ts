@@ -17,7 +17,7 @@ import {
 } from "./types";
 
 export const CLEAN_CATEGORIES: readonly CleanCategory[] = [
-  { id: "trash", title: "Trash", description: "Files already deleted by the user", selectedByDefault: true },
+  { id: "trash", title: "Trash", description: "Permanently empty Trash via Finder", selectedByDefault: true },
   { id: "user-caches", title: "User caches", description: "Regenerable per-app caches", selectedByDefault: true },
   { id: "user-logs", title: "User logs", description: "Rotatable application and diagnostic logs", selectedByDefault: true },
   { id: "browser-caches", title: "Browser caches", description: "Regenerable web caches (profile data untouched)", selectedByDefault: true },
@@ -27,7 +27,7 @@ export const CLEAN_CATEGORIES: readonly CleanCategory[] = [
 ];
 
 const CLEAN_EVIDENCE: Record<CleanCategoryId, string> = {
-  trash: "Already in Trash",
+  trash: "Trash contents (Finder is the only reliable inventory)",
   "user-caches": "Regenerable user cache",
   "user-logs": "Rotatable log data",
   "browser-caches": "Regenerable browser cache",
@@ -165,6 +165,43 @@ function planCleanItem(
   if (!existing.evidence || (existing.evidence.source === input.evidence.source && existing.evidence.detail === input.evidence.detail)) return;
 }
 
+export interface TrashInventory {
+  count: number;
+  names: string[];
+  /** True when Finder answered but the list was truncated for display. */
+  truncated: boolean;
+  /** True when even Finder could not read Trash (Automation denied). */
+  unavailable: boolean;
+}
+
+export async function trashInventory(runner: CommandRunner): Promise<TrashInventory> {
+  const namesResult = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to get name of every item of trash']);
+  if (namesResult.exitCode !== 0) {
+    return { count: 0, names: [], truncated: false, unavailable: true };
+  }
+  const raw = namesResult.stdout.trim();
+  // Finder returns "missing value" for an empty Trash.
+  if (!raw || raw === "missing value") return { count: 0, names: [], truncated: false, unavailable: false };
+  const countResult = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to count items of trash']);
+  const count = Number.parseInt(countResult.stdout.trim(), 10);
+  const names = raw.split(/,\s*/u).map((name) => name.trim()).filter(Boolean);
+  return {
+    count: Number.isFinite(count) ? count : names.length,
+    names: names.slice(0, 8),
+    truncated: names.length > 8,
+    unavailable: false,
+  };
+}
+
+export async function emptyTrash(runner: CommandRunner): Promise<{ emptied: boolean; detail: string }> {
+  const result = await runner.run(["/usr/bin/osascript", "-e", 'tell application "Finder" to empty trash']);
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || "Finder refused to empty Trash";
+    return { emptied: false, detail };
+  }
+  return { emptied: true, detail: "Trash emptied via Finder" };
+}
+
 async function trashPaths(paths: SystemPaths): Promise<string[]> {
   const roots = [join(paths.home, ".Trash")];
   const found: string[] = [];
@@ -173,10 +210,14 @@ async function trashPaths(paths: SystemPaths): Promise<string[]> {
     try {
       names = await readdir(root);
     } catch (error) {
-      // Trash may be present but unreadable (TCC/EPERM): surface it as a
-      // warning downstream rather than failing the whole scan.
+      // Trash may be present but unreadable without Full Disk Access
+      // (TCC/EPERM): the Finder inventory is the fallback, so surface this
+      // as a warning downstream rather than failing the whole scan.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw new Error(`cannot read Trash: ${(error as Error).message ?? String(error)}`);
+      const reason = (error as NodeJS.ErrnoException).code === "EPERM"
+        ? "Trash needs Full Disk Access for direct reads (Finder will be used instead)"
+        : ((error as Error).message ?? String(error));
+      throw new Error(`cannot read Trash directly: ${reason}`);
     }
     for (const name of names) found.push(join(root, name));
   }
@@ -434,6 +475,7 @@ async function planOrphanedLeftovers(
 export interface CleanScanOptions {
   categories?: CleanCategoryId[];
   includeOrphans?: boolean;
+  finderTrash?: TrashInventory | undefined;
 }
 
 export async function scanCleanTargets(
@@ -454,20 +496,51 @@ export async function scanCleanTargets(
     }
   };
   if (selected.has("trash")) {
-    let trash: string[];
+    // Trash is inventoried through Finder, not readdir: without Full Disk
+    // Access the directory listing fails with EPERM even for the owner.
+    const inventory = options.finderTrash ?? await trashInventory(runner);
+    // Probe whether per-item quarantine can work here at all. Without Full
+    // Disk Access each Trash child would fail quarantine with EPERM, so the
+    // only honest action is Finder empty (handled by the caller).
+    let directReadable = false;
     try {
-      trash = await trashPaths(paths);
+      await trashPaths(paths);
+      directReadable = true;
     } catch (error) {
-      errors.push(`trash: ${error instanceof Error ? error.message : String(error)}`);
-      trash = [];
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        warnings.push(error instanceof Error ? error.message : String(error));
+      }
     }
-    for (const path of trash) {
-      planCleanItem(planned, {
-        path,
+    if (inventory.unavailable) {
+      warnings.push("Trash inventory is unavailable: Finder automation was denied. Grant Automation permission and retry.");
+    } else if (inventory.count === 0) {
+      warnings.push("Trash is already empty.");
+    } else {
+      warnings.push(
+        `Trash holds ${inventory.count} item(s)${inventory.names.length > 0 ? `: ${inventory.names.join(", ")}${inventory.truncated ? ", …" : ""}` : ""}. Emptying is permanent and cannot enter quarantine.`,
+      );
+      // A synthetic marker so the category shows a count without pretending
+      // each Finder item maps to a filesystem candidate we can quarantine.
+      planned.set("finder:trash", {
+        path: join(paths.home, ".Trash"),
         category: "trash",
         risk: "confirmed",
         evidence: { source: "clean-scan", detail: CLEAN_EVIDENCE.trash },
-      }, paths);
+      });
+    }
+    if (directReadable) {
+      // Direct children are still planned when readable (Full Disk Access),
+      // so per-item quarantine keeps working where the OS allows it.
+      for (const path of await trashPaths(paths)) {
+        planCleanItem(planned, {
+          path,
+          category: "trash",
+          risk: "confirmed",
+          evidence: { source: "clean-scan", detail: "Trash item (direct read)" },
+        }, paths);
+      }
+    } else {
+      planned.delete("finder:trash");
     }
   }
   await run("user-caches", () => planUserCaches(planned, paths));
@@ -506,7 +579,26 @@ export async function materializeCleanItems(
         continue;
       }
       const candidate = await makeCandidate({ path: entry.path, kind: inferKind(entry.path), risk: entry.risk, evidence: [entry.evidence], runner });
-      if (!candidate) continue;
+      if (!candidate) {
+        // The synthetic Finder Trash marker has no filesystem entry to stat.
+        // Keep it as a display-only row so the category still shows a count.
+        if (entry.path === join(paths.home, ".Trash") && entry.category === "trash") {
+          const meta = categoryById.get(entry.category);
+          items.push({
+            id: "finder:trash",
+            path: entry.path,
+            kind: "other",
+            risk: entry.risk,
+            evidence: [entry.evidence],
+            sizeBytes: 0,
+            requiresAdmin: false,
+            selectedByDefault: meta?.selectedByDefault ?? true,
+            category: entry.category,
+            categoryTitle: meta?.title ?? entry.category,
+          });
+        }
+        continue;
+      }
       if (candidate.risk === "protected") continue;
       const meta = categoryById.get(entry.category);
       items.push({
@@ -527,11 +619,15 @@ export async function scanClean(
   paths: SystemPaths,
   runner: CommandRunner,
   options: CleanScanOptions = {},
-): Promise<CleanResult> {
+): Promise<CleanResult & { trashInventory?: TrashInventory }> {
   const whitelist = await loadCleanWhitelist(paths).catch((error) => {
     throw error;
   });
-  const { planned, warnings, errors } = await scanCleanTargets(paths, runner, options);
+  let finderTrash: TrashInventory | undefined;
+  if ((options.categories ?? CLEAN_CATEGORIES.map((category) => category.id)).includes("trash")) {
+    finderTrash = options.finderTrash ?? await trashInventory(runner);
+  }
+  const { planned, warnings, errors } = await scanCleanTargets(paths, runner, { ...options, finderTrash });
   const { items, skipped } = await materializeCleanItems(planned, paths, runner, whitelist);
   for (const entry of skipped) warnings.push(`Skipped ${entry.path}: ${entry.reason}`);
   const totals = new Map<CleanCategoryId, { itemCount: number; totalBytes: number }>();
@@ -553,6 +649,7 @@ export async function scanClean(
     items,
     warnings,
     errors,
+    ...(finderTrash ? { trashInventory: finderTrash } : {}),
   };
 }
 

@@ -6,17 +6,30 @@ import {
   addWhitelistCategory,
   addWhitelistPath,
   CLEAN_CATEGORIES,
+  emptyTrash,
   loadCleanWhitelist,
   removeWhitelistEntry,
   saveCleanWhitelist,
   scanClean,
   selectCleanItems,
+  trashInventory,
 } from "../src/clean";
 import { testPaths } from "./helpers";
 
 class CleanRunner implements CommandRunner {
+  constructor(private readonly trashNames: string[] = ["old.txt"]) {}
+
   async run(command: readonly string[]): Promise<CommandResult> {
     if (command[0] === "/usr/bin/du") return { exitCode: 0, stdout: `4\t${command.at(-1)}\n`, stderr: "" };
+    if (command[0] === "/usr/bin/osascript" && command.at(-1)?.includes("name of every item of trash")) {
+      return { exitCode: 0, stdout: `${this.trashNames.join(", ")}\n`, stderr: "" };
+    }
+    if (command[0] === "/usr/bin/osascript" && command.at(-1)?.includes("count items of trash")) {
+      return { exitCode: 0, stdout: `${this.trashNames.length}\n`, stderr: "" };
+    }
+    if (command[0] === "/usr/bin/osascript" && command.at(-1)?.includes("empty trash")) {
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
     return { exitCode: 127, stdout: "", stderr: "" };
   }
 
@@ -42,7 +55,23 @@ describe("clean scanner", () => {
     expect(result.items.some((item) => item.category === "trash")).toBeTrue();
     expect(result.items.some((item) => item.category === "user-caches")).toBeTrue();
     expect(result.items.every((item) => item.evidence.some((entry) => entry.source === "clean-scan"))).toBeTrue();
-    expect(result.categories.find((category) => category.id === "trash")?.itemCount).toBe(1);
+    expect(result.trashInventory?.count).toBe(1);
+    expect(result.warnings.some((warning) => warning.includes("Emptying is permanent"))).toBeTrue();
+  });
+
+  test("reads Trash through Finder and empties it on request", async () => {
+    const paths = await testPaths();
+    const inventory = await trashInventory(new CleanRunner(["a.txt", "b.txt"]));
+    expect(inventory.count).toBe(2);
+    expect(inventory.names).toEqual(["a.txt", "b.txt"]);
+    expect(inventory.unavailable).toBeFalse();
+    expect((await emptyTrash(new CleanRunner())).emptied).toBeTrue();
+    const denied = await trashInventory(new (class implements CommandRunner {
+      async run(): Promise<CommandResult> { return { exitCode: 1, stdout: "", stderr: "denied" }; }
+      async exists(): Promise<boolean> { return false; }
+    })());
+    expect(denied.unavailable).toBeTrue();
+    void paths;
   });
 
   test("never offers model stores, chat history, or dependency trees", async () => {

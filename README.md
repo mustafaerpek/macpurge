@@ -225,7 +225,7 @@ planned → quarantining → quarantined → restored
 
 | Category | Default | What it covers |
 | --- | :---: | --- |
-| `trash` | Selected | Contents of `~/.Trash` |
+| `trash` | Selected | Finder Trash inventory; emptied permanently via Finder, never quarantined |
 | `user-caches` | Selected | Per-app directories in `~/Library/Caches` |
 | `user-logs` | Selected | `~/Library/Logs` entries and diagnostic reports |
 | `browser-caches` | Selected | Cache leaves (`Cache`, `GPUCache`, `Code Cache`, …) under browser vendors—profiles untouched |
@@ -234,6 +234,8 @@ planned → quarantining → quarantined → restored
 | `orphaned-leftovers` | Opt-in | Bundle-style `Application Support` directories with no installed owner (`--all-categories` or `--category`) |
 
 Hard never-delete rules apply to every scan: local model stores (`~/.ollama`, `~/.cache/huggingface`), AI chat and memory directories (`.codex/sessions`, `.claude/projects`, `.grok/sessions`), dependency trees anywhere in the tree, and cache-named system stores such as `com.apple.e5rt.e5bundlecache`. Anything matching is silently excluded—never offered, never counted.
+
+Trash is special: without Full Disk Access even the owner cannot list `~/.Trash` directly (`EPERM`), so macpurge inventories it through Finder and empties it with Finder's own empty command. That action is permanent—it cannot enter quarantine or be restored. Everything else quarantines normally. `doctor` reports whether direct Trash reads work (`Direct read` vs `Via Finder`) so the fallback is never a surprise.
 
 `clean --whitelist <path|category-id>` persists to `~/.config/macpurge/clean-whitelist.json` (`0600`). Whitelisted entries are reported as warnings and skipped on every future scan.
 
@@ -429,6 +431,10 @@ macpurge respects terminal capabilities and the [`NO_COLOR`](https://no-color.or
 ### `doctor` reports administrator access as “On demand”
 
 This is expected. macpurge does not install a privileged helper or cache its own credentials. macOS requests authorization only if a reviewed system-owned target needs it.
+
+### `doctor` reports Trash as “Via Finder”
+
+Also expected. Without Full Disk Access, macOS denies direct reads of `~/.Trash` even to its owner. macpurge inventories Trash through Finder instead. Grant Full Disk Access to the terminal (System Settings → Privacy & Security → Full Disk Access) for direct reads; Finder empty still works either way.
 
 ### Restore reports a destination collision
 
