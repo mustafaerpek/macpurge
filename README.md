@@ -56,6 +56,33 @@ macpurge combines deep discovery with a deliberately conservative mutation model
 
 The current release is intentionally built and tested for one local Apple Silicon configuration. Other macOS versions and Intel Macs are not yet supported targets.
 
+## Install
+
+Download the latest signed binary from
+[GitHub Releases](https://github.com/mustafaerpek/macpurge/releases):
+
+```bash
+curl -fsSL -o macpurge https://github.com/mustafaerpek/macpurge/releases/latest/download/macpurge-darwin-arm64
+chmod +x macpurge
+install -m 755 macpurge ~/.bun/bin/macpurge
+```
+
+Make sure `~/.bun/bin` is available in your `PATH`, then confirm the installation:
+
+```bash
+macpurge --version
+macpurge doctor
+```
+
+Verify the download against the published checksum
+(the checksum file references the artifact name `macpurge-darwin-arm64`):
+
+```bash
+curl -fsSL -o macpurge-darwin-arm64 https://github.com/mustafaerpek/macpurge/releases/latest/download/macpurge-darwin-arm64
+curl -fsSL -o SHA256SUMS.txt https://github.com/mustafaerpek/macpurge/releases/latest/download/SHA256SUMS.txt
+shasum -a 256 -c SHA256SUMS.txt
+```
+
 ## Install from source
 
 ```bash
@@ -66,13 +93,6 @@ bun run check
 bun test
 bun run build
 install -m 755 dist/macpurge ~/.bun/bin/macpurge
-```
-
-Make sure `~/.bun/bin` is available in your `PATH`, then confirm the installation:
-
-```bash
-macpurge --version
-macpurge doctor
 ```
 
 The build script creates a standalone `bun-darwin-arm64` executable and reapplies a local ad-hoc code signature for current macOS runtime validation.
