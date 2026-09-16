@@ -93,11 +93,12 @@ macpurge uninstall "Visual Studio Code" --dry-run
 macpurge uninstall "Visual Studio Code"
 ```
 
-After quarantine, macpurge prints both recovery choices:
+After quarantine, every mutating command prints copy-paste recovery choices:
 
 ```bash
-macpurge restore <session-id>  # Put every available item back
-macpurge purge <session-id>    # Permanently remove the quarantine
+macpurge restore latest     # Put every available item back
+macpurge purge latest       # Permanently remove the quarantine
+macpurge verify "Example"   # Rescan for remaining files
 ```
 
 ## Command reference
@@ -106,12 +107,12 @@ macpurge purge <session-id>    # Permanently remove the quarantine
 | --- | --- | :---: |
 | `macpurge` | Search for one installed application and open the guided flow | After confirmation |
 | `macpurge list [--json]` | List discovered applications and install sources | No |
-| `macpurge scan <selector> [--json] [--no-deep]` | Find and classify related files | No |
+| `macpurge scan <selector> [--json] [--no-deep] [--summary]` | Find and classify related files | No |
 | `macpurge uninstall <selector> [options]` | Move selected candidates into quarantine | Yes |
 | `macpurge history [--json]` | Display recorded sessions and states | No |
-| `macpurge restore <session-id> [options]` | Restore quarantined files to their original paths | Yes |
-| `macpurge purge <session-id> [options]` | Run deferred cleanup and permanently delete one quarantine | Yes, irreversible |
-| `macpurge verify <selector\|session-id> [--json]` | Rescan for files, processes, helpers, and registrations | No |
+| `macpurge restore <session\|latest> [options]` | Restore quarantined files to their original paths | Yes |
+| `macpurge purge <session\|latest> [options]` | Run deferred cleanup and permanently delete one quarantine | Yes, irreversible |
+| `macpurge verify <selector\|session> [--json] [--summary]` | Rescan for files, processes, helpers, and registrations | No |
 | `macpurge doctor [--json]` | Check architecture, Bun, tools, paths, and authorization readiness | No |
 | `macpurge rules validate\|list\|explain` | Inspect the active declarative rule set | No |
 
@@ -121,11 +122,23 @@ macpurge purge <session-id>    # Permanently remove the quarantine
 | --- | --- |
 | `--json` | Emit the stable machine-readable envelope without ANSI formatting |
 | `--no-deep` | Skip the bounded filesystem-name scan |
-| `--dry-run` | Build and display the uninstall plan without moving anything |
+| `--dry-run` | Preview `uninstall` or `purge` without moving or deleting anything |
+| `--yes`, `-y` | Skip typed and process confirmations (scripts and interactive runs) |
 | `--include <candidate-id>` | Explicitly include one review candidate; may be repeated |
+| `--include-possible` | Quarantine every review candidate without listing IDs |
+| `--summary` | Show counts instead of the full file list |
 | `--confirm <exact-value>` | Supply the exact confirmation in non-interactive use |
 | `--help`, `-h` | Show the command guide |
 | `--version`, `-v` | Print the installed version |
+
+Selectors are forgiving: an app path, bundle ID, or fuzzy display name (`vscode`, `Visual Studio Code`) all resolve, with suggestions on misses. Sessions accept a full ID, a unique short prefix, or `latest`.
+
+```bash
+macpurge uninstall vscode --dry-run --summary
+macpurge uninstall "Visual Studio Code" --include-possible --yes
+macpurge restore latest --yes
+macpurge purge latest --dry-run
+```
 
 ## Safety model
 
@@ -137,7 +150,7 @@ macpurge displays candidates in three classes:
 | `possible` | 🟡 | Not selected | Name-only match, data nested under another application, or potentially shared payload |
 | `protected` | ⚪ | Blocked | Project settings, personal documents, broad roots, system developer tools, Apple apps, or paths that cannot be proven safe |
 
-Protected candidates cannot be forced through `--include`. Possible candidates require an explicit interactive choice or their exact candidate ID.
+Protected candidates cannot be forced through `--include`. Possible candidates require an explicit interactive choice, `--include <id>`, or `--include-possible`.
 
 ### Protected boundaries
 
@@ -228,20 +241,21 @@ Only application-specific, strongly attributable payloads can be confirmed autom
 
 ## Running applications
 
-Before quarantine, macpurge detects running processes with the system `pgrep -fl` and verifies each candidate's executable against the bundle (including bundles installed through a symlink). It then requests a normal quit using the bundle ID and waits five seconds. If processes remain, it can request `SIGTERM`; `SIGKILL` requires a separate confirmation. Non-interactive execution never approves force termination automatically.
+Before quarantine, macpurge detects running processes with the system `pgrep -fl` and verifies each candidate's executable against the bundle (including bundles installed through a symlink). It then requests a normal quit using the bundle ID and waits five seconds. If processes remain, it asks once for `SIGTERM` and once for `SIGKILL`—`--yes` approves both automatically for scripted runs. Non-interactive execution without `--yes` still refuses force termination.
 
 A process lookup failure is reported as an error and stops the uninstall instead of being misread as "the application is not running."
 
 ## Non-interactive and JSON use
 
-Mutation commands require exact confirmation when stdin is not a TTY:
+Mutation commands require exact confirmation when stdin is not a TTY. Purge now confirms the application name (not a raw UUID) after printing the session, and supports `--dry-run` before anything permanent:
 
 ```bash
 macpurge uninstall "/Applications/Example.app" \
   --confirm "Example"
 
-macpurge purge 4eb2f695-9d7d-4dcc-9b65-e51e2a39fcab \
-  --confirm 4eb2f695-9d7d-4dcc-9b65-e51e2a39fcab
+macpurge purge latest --dry-run
+macpurge purge 4eb2f695 --confirm "Example"
+macpurge uninstall vscode --yes --include-possible
 ```
 
 JSON responses contain `schemaVersion`, `status`, `warnings`, and `errors`, plus command-specific data such as `app`, `candidates`, or `sessionId`:
@@ -347,6 +361,8 @@ bun run build
 The suite uses temporary fake macOS roots and command-runner doubles. It does not uninstall real applications. Integration tests marked `real macOS process detection` compile a small helper binary into a fake bundle and verify process detection against the live system `pgrep`; they run on macOS with a compiler available and are skipped elsewhere. `bun run bench` measures scan wall time and per-command cost on a synthetic tree without changing scan behavior. Current coverage includes:
 
 - ambiguous selectors and multiple same-name applications
+- fuzzy selectors with suggestions on misses
+- short session IDs and `latest` resolution
 - VS Code-style data, extensions, CLI links, and updater files
 - protection of project `.vscode` directories
 - ambiguous copies under another application's data

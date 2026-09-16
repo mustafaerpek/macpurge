@@ -158,17 +158,55 @@ export async function listApplications(paths: SystemPaths, runner: CommandRunner
   return apps.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
+export function scoreMatch(app: AppIdentity, needle: string): number {
+  const query = needle.trim().toLowerCase();
+  if (!query) return 0;
+  const bundle = app.bundleId.toLowerCase();
+  const display = app.displayName.toLowerCase();
+  const base = appBaseName(app.path).toLowerCase();
+  if (bundle === query || display === query || base === query) return 100;
+  if (display.replace(/\s+/gu, "") === query.replace(/\s+/gu, "")) return 90;
+  if (bundle.toLowerCase().startsWith(query) || display.startsWith(query) || base.startsWith(query)) return 70;
+  if (bundle.includes(query) || display.includes(query) || base.includes(query)) return 50;
+  const condensed = query.replace(/[^a-z0-9]/gu, "");
+  if (condensed.length >= 2) {
+    const haystacks = [bundle.replace(/[^a-z0-9]/gu, ""), display.replace(/[^a-z0-9]/gu, ""), base.replace(/[^a-z0-9]/gu, "")];
+    if (haystacks.some((value) => value.includes(condensed))) return 40;
+  }
+  const tokens = query.split(/[^a-z0-9]+/gu).filter((token) => token.length >= 3);
+  if (tokens.length > 0) {
+    const haystack = `${bundle} ${display} ${base}`;
+    const hits = tokens.filter((token) => haystack.includes(token)).length;
+    if (hits > 0) return 10 + Math.round((30 * hits) / tokens.length);
+  }
+  return 0;
+}
+
+export function suggestApplications(apps: AppIdentity[], selector: string, limit = 3): AppIdentity[] {
+  return [...apps]
+    .map((app) => ({ app, score: scoreMatch(app, selector) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.app.displayName.localeCompare(b.app.displayName))
+    .slice(0, limit)
+    .map((entry) => entry.app);
+}
+
 export async function selectApplication(selector: string, paths: SystemPaths, runner: CommandRunner): Promise<AppIdentity> {
   if (selector.startsWith("/")) return readAppIdentity(resolve(selector), paths, runner);
   const apps = await listApplications(paths, runner);
   const needle = selector.toLowerCase();
-  const matches = apps.filter(
+  const exact = apps.filter(
     (app) =>
       app.bundleId.toLowerCase() === needle ||
       app.displayName.toLowerCase() === needle ||
       appBaseName(app.path).toLowerCase() === needle,
   );
-  if (matches.length === 0) throw new AppSelectionError(`No installed application matches: ${selector}`);
-  if (matches.length > 1) throw new AppSelectionError(`Application selector is ambiguous: ${matches.map((app) => app.path).join(", ")}`);
-  return matches[0]!;
+  if (exact.length === 1) return exact[0]!;
+  if (exact.length > 1) throw new AppSelectionError(`Application selector is ambiguous: ${exact.map((app) => app.path).join(", ")}`);
+  const ranked = suggestApplications(apps, selector, 5).filter((app) => !exact.includes(app));
+  if (ranked.length === 1) return ranked[0]!;
+  if (ranked.length > 1) throw new AppSelectionError(`Application selector is ambiguous: ${ranked.map((app) => `${app.displayName} (${app.bundleId})`).join(", ")}`);
+  const suggestions = suggestApplications(apps, selector, 3);
+  const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.map((app) => app.displayName).join(", ")}?` : "";
+  throw new AppSelectionError(`No installed application matches: ${selector}.${hint}`);
 }

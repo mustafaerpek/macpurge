@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandResult, CommandRunner } from "../src/command";
-import { listApplications, readAppIdentity, selectApplication } from "../src/apps";
+import { listApplications, readAppIdentity, scoreMatch, selectApplication, suggestApplications } from "../src/apps";
 import { testPaths } from "./helpers";
 
 class IdentityRunner implements CommandRunner {
@@ -101,5 +101,20 @@ describe("application discovery", () => {
     await fakeApp(outside);
     const runner = new IdentityRunner({ Outside: { CFBundleIdentifier: "com.example.outside", CFBundleDisplayName: "Outside" } });
     await expect(readAppIdentity(outside, paths, runner)).rejects.toThrow("outside supported");
+  });
+
+  test("resolves fuzzy names and suggests near misses", async () => {
+    const paths = await testPaths();
+    for (const name of ["Visual Studio Code", "Floodtide"]) await fakeApp(join(paths.applications, `${name}.app`));
+    const runner = new IdentityRunner({
+      "Visual Studio Code": { CFBundleIdentifier: "com.microsoft.VSCode", CFBundleDisplayName: "Visual Studio Code" },
+      Floodtide: { CFBundleIdentifier: "com.example.floodtide", CFBundleDisplayName: "Floodtide" },
+    });
+    expect((await selectApplication("vscode", paths, runner)).bundleId).toBe("com.microsoft.VSCode");
+    expect((await selectApplication("VisualStudioCode", paths, runner)).bundleId).toBe("com.microsoft.VSCode");
+    const both = await listApplications(paths, runner);
+    expect(scoreMatch(both[0]!, "zzz-no-such-app")).toBe(0);
+    expect(suggestApplications(both, "Visual Studio Code Typo").length).toBeGreaterThan(0);
+    await expect(selectApplication("zzz-no-such-app", paths, runner)).rejects.toThrow("No installed application matches");
   });
 });

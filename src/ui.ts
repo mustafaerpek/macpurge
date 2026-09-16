@@ -102,9 +102,17 @@ export function printCandidate(candidate: Candidate): void {
   console.log(`    ${visual.label}  ${pc.dim(candidate.kind)}  ${pc.dim(`#${candidate.id}`)}`);
 }
 
-export function printScanReport(scan: ScanResult): void {
+export function printScanReport(scan: ScanResult, options: { summaryOnly?: boolean } = {}): void {
   printBanner("Inspect deeply. Remove deliberately.");
   printAppCard(scan.app);
+
+  if (options.summaryOnly) {
+    printRiskSummary(scan.candidates);
+    if (scan.deferredActions.length > 0) printDeferred(scan.deferredActions);
+    for (const warning of scan.warnings) printWarning(warning);
+    for (const error of scan.errors) printError(error);
+    return;
+  }
 
   const groups: Array<{ risk: Candidate["risk"]; title: string; help: string }> = [
     { risk: "confirmed", title: "Ready to quarantine", help: "Strong ownership evidence" },
@@ -161,6 +169,10 @@ export function printSessionReport(manifest: SessionManifest): void {
   for (const error of manifest.errors) printError(error);
 }
 
+export function printNextSteps(sessionId: string, displayName: string): void {
+  console.log(`\n${pc.dim("Next:")} ${pc.cyan(`macpurge verify "${displayName}"`)} ${pc.dim("·")} ${pc.cyan(`macpurge restore ${sessionId}`)} ${pc.dim("·")} ${pc.cyan(`macpurge purge ${sessionId}`)}`);
+}
+
 export function printApplicationList(apps: AppIdentity[]): void {
   printBanner(`${apps.length} applications discovered on this Mac.`);
   printSection("Applications", "name · version · source");
@@ -181,9 +193,9 @@ export function printHistory(sessions: SessionManifest[]): void {
     console.log(`  ${pc.dim("○")} No macpurge sessions yet.`);
     return;
   }
-  printSection("History", `${sessions.length} sessions`);
+  printSection("History", `${sessions.length} sessions · restore/purge accept a short id or 'latest'`);
   for (const session of sessions) {
-    console.log(`  ${statusVisual(session.status)}  ${pc.bold(session.app.displayName)}`);
+    console.log(`  ${statusVisual(session.status)}  ${pc.bold(session.app.displayName)} ${pc.dim(`· ${session.id.slice(0, 8)}`)}`);
     console.log(`    ${pc.dim(`${session.createdAt} · ${session.id}`)}`);
   }
 }
@@ -238,8 +250,8 @@ export function printHelp(): void {
     ["macpurge scan <app>", "Inspect files without changing anything"],
     ["macpurge uninstall <app>", "Move confirmed files into quarantine"],
     ["macpurge history", "Review previous sessions"],
-    ["macpurge restore <session>", "Put quarantined files back"],
-    ["macpurge purge <session>", "Permanently remove one quarantine"],
+    ["macpurge restore <session|latest>", "Put quarantined files back"],
+    ["macpurge purge <session|latest>", "Permanently remove one quarantine"],
     ["macpurge verify <app|session>", "Check for remaining files"],
     ["macpurge doctor", "Check system readiness"],
     ["macpurge rules <action>", "Validate, list, or explain rules"],
@@ -247,11 +259,27 @@ export function printHelp(): void {
   for (const [command, description] of commands) {
     console.log(`  ${pc.cyan(pad(command!, 34))} ${pc.dim(description!)}`);
   }
+  printSection("Selection");
+  console.log(`  ${pc.dim("App selectors accept a path, bundle id, or a fuzzy name (e.g. 'vscode'). Apple apps stay protected.")}`);
+  console.log(`  ${pc.dim("Sessions accept a full id, a unique short prefix, or 'latest'.")}`);
+  printSection("Options");
+  const options = [
+    ["--yes, -y", "Skip typed + process confirmations (scripts)"],
+    ["--confirm <text>", "Non-interactive typed confirmation"],
+    ["--include <id>", "Also quarantine one possible item (repeatable)"],
+    ["--include-possible", "Quarantine every possible item"],
+    ["--dry-run", "Preview uninstall or purge without changing anything"],
+    ["--summary", "Show counts instead of the full file list"],
+    ["--no-deep", "Skip the bounded filesystem sweep"],
+    ["--json", "Stable machine output"],
+  ];
+  for (const [flag, description] of options) {
+    console.log(`  ${pc.cyan(pad(flag!, 34))} ${pc.dim(description!)}`);
+  }
   printSection("Safety model");
   console.log(`  ${pc.green("●")} Confirmed files are selected by default and moved to quarantine.`);
   console.log(`  ${pc.yellow("◐")} Possible matches always require your explicit selection.`);
   console.log(`  ${pc.dim("○")} Protected paths can never be selected.`);
-  console.log(`\n  ${pc.dim("Use --json for stable machine output and --help for this guide.")}`);
 }
 
 export function appChoiceLabel(app: AppIdentity): string {

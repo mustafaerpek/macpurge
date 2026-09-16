@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { FakeCommandRunner } from "../src/command";
 import { QuarantineService } from "../src/quarantine";
 import { createDefaultDeps, runCli, CliError } from "../src/cli";
-import { parse, selectedCandidates } from "../src/cli-helpers";
+import { forceConfirmer, parse, selectedCandidates } from "../src/cli-helpers";
 import { testPaths } from "./helpers";
 import type { ScanResult } from "../src/types";
 
@@ -20,11 +20,14 @@ describe("CLI composition", () => {
   });
 
   test("parses json/include/confirm flags", () => {
-    const parsed = parse(["uninstall", "Example", "--json", "--include", "a", "--include", "b", "--confirm", "Example"]);
+    const parsed = parse(["uninstall", "Example", "--json", "--include", "a", "--include", "b", "--confirm", "Example", "--yes", "--summary", "--include-possible"]);
     expect(parsed.positionals[0]).toBe("uninstall");
     expect(parsed.values.json).toBeTrue();
     expect(parsed.values.include).toEqual(["a", "b"]);
     expect(parsed.values.confirm).toBe("Example");
+    expect(parsed.values.yes).toBeTrue();
+    expect(parsed.values.summary).toBeTrue();
+    expect(parsed.values["include-possible"]).toBeTrue();
   });
 
   test("selects confirmed by default and guards protected/unknown", () => {
@@ -34,8 +37,13 @@ describe("CLI composition", () => {
     const scan = { candidates: [base, possible, prot] } as unknown as ScanResult;
     expect(selectedCandidates(scan, []).map((c) => c.id)).toEqual(["c1"]);
     expect(selectedCandidates(scan, ["p1"]).map((c) => c.id).sort()).toEqual(["c1", "p1"]);
+    expect(selectedCandidates(scan, [], true).map((c) => c.id).sort()).toEqual(["c1", "p1"]);
     expect(() => selectedCandidates(scan, ["missing"])).toThrow("Unknown candidate");
     expect(() => selectedCandidates(scan, ["x1"])).toThrow("Protected candidate");
+  });
+
+  test("assume-yes bypasses process confirmations", async () => {
+    expect(await forceConfirmer(true)("SIGTERM", [1])).toBeTrue();
   });
 
   test("rejects unknown commands with exit code 2", async () => {

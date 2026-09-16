@@ -121,7 +121,7 @@ export class QuarantineService {
   }
 
   async restore(id: string): Promise<SessionManifest> {
-    const manifest = await this.store.load(id);
+    const manifest = await this.store.load(await this.store.resolve(id));
     if (!["quarantined", "partial"].includes(manifest.status)) throw new Error(`Session cannot be restored from status ${manifest.status}`);
     manifest.errors = [];
 
@@ -189,7 +189,7 @@ export class QuarantineService {
   }
 
   async purge(id: string): Promise<SessionManifest> {
-    const manifest = await this.store.load(id);
+    const manifest = await this.store.load(await this.store.resolve(id));
     if (!["quarantined", "partial"].includes(manifest.status)) throw new Error(`Session cannot be purged from status ${manifest.status}`);
     if (manifest.items.some((item) => item.status !== "moved" && item.status !== "purged")) {
       throw new Error("A partial session with unmoved items must be restored or repaired before purge");
@@ -209,7 +209,7 @@ export class QuarantineService {
       }
     }
 
-    const sessionDirectory = assertQuarantinePath(join(this.paths.quarantineRoot, id), this.paths);
+    const sessionDirectory = assertQuarantinePath(join(this.paths.quarantineRoot, manifest.id), this.paths);
     try {
       await rm(sessionDirectory, { recursive: true, force: true });
     } catch {

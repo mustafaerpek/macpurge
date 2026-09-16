@@ -25,7 +25,10 @@ export interface Parsed {
     version?: boolean;
     "no-deep"?: boolean;
     "dry-run"?: boolean;
+    yes?: boolean;
+    summary?: boolean;
     include?: string[];
+    "include-possible"?: boolean;
     confirm?: string;
   };
 }
@@ -41,7 +44,10 @@ export function parse(argv: string[]): Parsed {
       version: { type: "boolean", short: "v" },
       "no-deep": { type: "boolean" },
       "dry-run": { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
+      summary: { type: "boolean" },
       include: { type: "string", multiple: true },
+      "include-possible": { type: "boolean" },
       confirm: { type: "string" },
     },
   });
@@ -82,6 +88,10 @@ export async function typedConfirmation(expected: string, provided?: string): Pr
   }
 }
 
+export function forceConfirmer(assumeYes: boolean): (signal: "SIGTERM" | "SIGKILL", pids: number[]) => Promise<boolean> {
+  return (signal, pids) => (assumeYes ? Promise.resolve(true) : confirmForce(signal, pids));
+}
+
 export async function confirmForce(signal: "SIGTERM" | "SIGKILL", pids: number[]): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
   const answer = await confirm({
@@ -91,9 +101,9 @@ export async function confirmForce(signal: "SIGTERM" | "SIGKILL", pids: number[]
   return !isCancel(answer) && answer === true;
 }
 
-export function selectedCandidates(scan: ScanResult, includes: string[]): Candidate[] {
+export function selectedCandidates(scan: ScanResult, includes: string[], includePossible = false): Candidate[] {
   const byId = new Map(scan.candidates.map((candidate) => [candidate.id, candidate]));
-  const selected = scan.candidates.filter((candidate) => candidate.risk === "confirmed");
+  const selected = scan.candidates.filter((candidate) => candidate.risk === "confirmed" || (includePossible && candidate.risk === "possible"));
   for (const id of includes) {
     const candidate = byId.get(id);
     if (!candidate) throw new CliError(`Unknown candidate id: ${id}`, 2);

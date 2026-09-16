@@ -41,6 +41,23 @@ export class ManifestStore {
     return join(this.paths.sessionRoot, `${id}.json`);
   }
 
+  async latest(): Promise<SessionManifest> {
+    const sessions = await this.list();
+    if (sessions.length === 0) throw new Error("No macpurge sessions yet");
+    return sessions[0]!;
+  }
+
+  async resolve(id: string): Promise<string> {
+    const trimmed = id.trim();
+    if (/^latest$/iu.test(trimmed)) return (await this.latest()).id;
+    if (/^[0-9a-f-]{36}$/iu.test(trimmed)) return trimmed.toLowerCase();
+    const sessions = await this.list();
+    const matches = sessions.filter((session) => session.id.toLowerCase().startsWith(trimmed.toLowerCase()));
+    if (matches.length === 1) return matches[0]!.id;
+    if (matches.length > 1) throw new Error(`Session id is ambiguous: ${trimmed}`);
+    throw new Error(`Invalid session id: ${id}`);
+  }
+
   async save(manifest: SessionManifest): Promise<void> {
     await mkdir(this.paths.sessionRoot, { recursive: true, mode: 0o700 });
     const destination = this.manifestPath(manifest.id);
@@ -51,8 +68,9 @@ export class ManifestStore {
   }
 
   async load(id: string): Promise<SessionManifest> {
-    const content = await readFile(this.manifestPath(id), "utf8");
-    return this.validate(JSON.parse(content), id);
+    const resolved = await this.resolve(id);
+    const content = await readFile(this.manifestPath(resolved), "utf8");
+    return this.validate(JSON.parse(content), resolved);
   }
 
   async list(): Promise<SessionManifest[]> {

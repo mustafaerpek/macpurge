@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
+import { resolve } from "node:path";
 import { BunCommandRunner } from "./command";
-import { listApplications, selectApplication } from "./apps";
+import { listApplications, readAppIdentity, selectApplication } from "./apps";
 import { isProtectedAppleApp } from "./app-policy";
 import { APP_VERSION } from "./version";
 import { loadRules, rulesForApp } from "./rules";
@@ -14,7 +15,7 @@ import { SCHEMA_VERSION, type AppIdentity, type ScanResult } from "./types";
 import { interactive } from "./interactive";
 import {
   activity,
-  confirmForce,
+  forceConfirmer,
   output,
   parse,
   selectedCandidates,
@@ -31,6 +32,7 @@ import {
   printHelp,
   printHistory,
   printKeyValue,
+  printNextSteps,
   printScanReport,
   printSection,
   printSessionReport,
@@ -47,6 +49,10 @@ export function createDefaultDeps(): CliDeps {
   return { paths, runner, quarantine: new QuarantineService(paths, runner) };
 }
 
+async function readAppIdentityForCli(selector: string, deps: CliDeps): Promise<AppIdentity> {
+  return readAppIdentity(resolve(selector), deps.paths, deps.runner);
+}
+
 async function commandList(deps: CliDeps, json: boolean): Promise<number> {
   const apps = await activity("Discovering installed applications", "Application inventory ready", !json, () => listApplications(deps.paths, deps.runner));
   if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", applications: apps, warnings: [], errors: [] }, true);
@@ -54,41 +60,62 @@ async function commandList(deps: CliDeps, json: boolean): Promise<number> {
   return 0;
 }
 
-async function commandScan(deps: CliDeps, selector: string | undefined, json: boolean, deep: boolean): Promise<number> {
+async function commandScan(deps: CliDeps, selector: string | undefined, parsed: Parsed): Promise<number> {
   if (!selector) throw new CliError("scan requires an application selector", 2);
+  const json = parsed.values.json === true;
+  const deep = parsed.values["no-deep"] !== true;
+  const summaryOnly = parsed.values.summary === true;
   const app = await activity("Resolving application identity", "Application identified", !json, () => selectApplication(selector, deps.paths, deps.runner));
   const result = await activity("Inspecting local files and registrations", "Deep scan complete", !json, () => scanApplication(app, deps.paths, deps.runner, deep));
   if (json) output(result, true);
-  else printScanReport(result);
+  else printScanReport(result, { summaryOnly });
   return 0;
+}
+
+function mutationConfirmation(parsed: Parsed, fallback: string): string | undefined {
+  if (parsed.values.confirm !== undefined) return parsed.values.confirm;
+  if (parsed.values.yes === true) return fallback;
+  return undefined;
 }
 
 async function commandUninstall(deps: CliDeps, parsed: Parsed): Promise<number> {
   const selector = parsed.positionals[1];
   if (!selector) throw new CliError("uninstall requires an application selector", 2);
   const rich = parsed.values.json !== true;
+  const assumeYes = parsed.values.yes === true;
+  if (selector.startsWith("/")) {
+    try {
+      const direct = await readAppIdentityForCli(selector, deps);
+      if (isProtectedAppleApp(direct)) throw new CliError("Apple system applications are protected and cannot be uninstalled", 2);
+    } catch (error) {
+      if (error instanceof CliError && error.message.includes("protected")) throw error;
+    }
+  }
   const app = await activity("Resolving application identity", "Application identified", rich, () => selectApplication(selector, deps.paths, deps.runner));
   if (isProtectedAppleApp(app)) throw new CliError("Apple system applications are protected and cannot be uninstalled", 2);
   const scan = await activity("Building a safe removal plan", "Removal plan ready", rich, () => scanApplication(app, deps.paths, deps.runner, parsed.values["no-deep"] !== true));
-  const selected = selectedCandidates(scan, parsed.values.include ?? []);
+  const selected = selectedCandidates(scan, parsed.values.include ?? [], parsed.values["include-possible"] === true);
   if (selected.length === 0) throw new CliError("No confirmed candidates were found", 5);
 
   if (parsed.values["dry-run"]) {
     const result = { ...scan, status: "found", selectedCandidateIds: selected.map((candidate) => candidate.id), dryRun: true };
     if (parsed.values.json) output(result, true);
     else {
-      printScanReport(scan);
+      printScanReport(scan, { summaryOnly: parsed.values.summary === true });
       printSuccess(`Dry run complete · ${selected.length} item(s) would enter quarantine.`);
     }
     return 0;
   }
 
-  await typedConfirmation(app.displayName, parsed.values.confirm);
-  const closed = await closeApplication(app, deps.runner, confirmForce);
+  await typedConfirmation(app.displayName, mutationConfirmation(parsed, app.displayName));
+  const closed = await closeApplication(app, deps.runner, forceConfirmer(assumeYes));
   if (!closed) throw new CliError("Application is still running; no files were moved", 3);
   const manifest = await activity("Moving verified files into quarantine", "Quarantine transaction complete", rich, () => deps.quarantine.quarantine(app, selected, scan.deferredActions));
   if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
-  else printSessionReport(manifest);
+  else {
+    printSessionReport(manifest);
+    printNextSteps(manifest.id, manifest.app.displayName);
+  }
   return manifest.status === "quarantined" ? 0 : 4;
 }
 
@@ -100,34 +127,53 @@ async function commandHistory(deps: CliDeps, json: boolean): Promise<number> {
 }
 
 async function commandRestore(deps: CliDeps, parsed: Parsed): Promise<number> {
-  const id = parsed.positionals[1];
-  if (!id) throw new CliError("restore requires a session id", 2);
+  const raw = parsed.positionals[1];
+  if (!raw) throw new CliError("restore requires a session id (or 'latest')", 2);
+  const id = await deps.quarantine.store.resolve(raw);
   const existing = await deps.quarantine.store.load(id);
-  await typedConfirmation(existing.app.displayName, parsed.values.confirm);
+  await typedConfirmation(existing.app.displayName, mutationConfirmation(parsed, existing.app.displayName));
   const manifest = await activity("Restoring quarantined files", "Restore transaction complete", parsed.values.json !== true, () => deps.quarantine.restore(id));
-  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: id, warnings: manifest.warnings, errors: manifest.errors }, true);
+  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else printSessionReport(manifest);
   return manifest.status === "restored" ? 0 : 4;
 }
 
 async function commandPurge(deps: CliDeps, parsed: Parsed): Promise<number> {
-  const id = parsed.positionals[1];
-  if (!id) throw new CliError("purge requires a session id", 2);
-  await deps.quarantine.store.load(id);
-  await typedConfirmation(id, parsed.values.confirm);
+  const raw = parsed.positionals[1];
+  if (!raw) throw new CliError("purge requires a session id (or 'latest')", 2);
+  const id = await deps.quarantine.store.resolve(raw);
+  const existing = await deps.quarantine.store.load(id);
+  if (parsed.values["dry-run"]) {
+    if (parsed.values.json) {
+      output({ schemaVersion: SCHEMA_VERSION, status: existing.status, app: existing.app, sessionId: id, itemCount: existing.items.length, deferredActions: existing.deferredActions, dryRun: true, warnings: existing.warnings, errors: existing.errors }, true);
+    } else {
+      printSessionReport(existing);
+      printSuccess(`Dry run complete · ${existing.items.length} item(s) would be permanently deleted.`);
+    }
+    return 0;
+  }
+  printSessionReport(existing);
+  if (parsed.values.json !== true) printNextSteps(id, existing.app.displayName);
+  await typedConfirmation(existing.app.displayName, mutationConfirmation(parsed, existing.app.displayName));
   const manifest = await activity("Permanently purging this quarantine", "Permanent purge complete", parsed.values.json !== true, () => deps.quarantine.purge(id));
-  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: id, warnings: manifest.warnings, errors: manifest.errors }, true);
+  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else printSessionReport(manifest);
   return manifest.status === "purged" ? 0 : 4;
 }
 
 async function identityForVerify(deps: CliDeps, selector: string): Promise<AppIdentity> {
-  if (/^[0-9a-f-]{36}$/u.test(selector)) return (await deps.quarantine.store.load(selector)).app;
-  return selectApplication(selector, deps.paths, deps.runner);
+  try {
+    return (await deps.quarantine.store.load(await deps.quarantine.store.resolve(selector))).app;
+  } catch {
+    return selectApplication(selector, deps.paths, deps.runner);
+  }
 }
 
-async function commandVerify(deps: CliDeps, selector: string | undefined, json: boolean, deep: boolean): Promise<number> {
+async function commandVerify(deps: CliDeps, parsed: Parsed): Promise<number> {
+  const selector = parsed.positionals[1];
   if (!selector) throw new CliError("verify requires an application selector or session id", 2);
+  const json = parsed.values.json === true;
+  const deep = parsed.values["no-deep"] !== true;
   const app = await activity("Resolving application or session", "Target identified", !json, () => identityForVerify(deps, selector));
   const scan = await activity("Checking for remaining files and processes", "Verification scan complete", !json, () => scanApplication(app, deps.paths, deps.runner, deep));
   const residue = scan.candidates.filter((candidate) => candidate.risk !== "protected");
@@ -135,7 +181,7 @@ async function commandVerify(deps: CliDeps, selector: string | undefined, json: 
   const result: ScanResult = { ...scan, status: residue.length === 0 && !runtimeResidue ? "clean" : "found" };
   if (json) output(result, true);
   else {
-    printScanReport(result);
+    printScanReport(result, { summaryOnly: parsed.values.summary === true });
     if (result.status === "clean") printSuccess("Verification passed · no removable residue found.");
     else printWarning("Verification found remaining files or active registrations.");
   }
@@ -201,7 +247,7 @@ async function commandRules(deps: CliDeps, parsed: Parsed): Promise<number> {
   if (action === "explain") {
     const selector = parsed.positionals[2];
     if (!selector) throw new CliError("rules explain requires an application selector", 2);
-    const app = await selectApplication(selector, deps.paths, deps.runner);
+    const app = await activity("Resolving application identity", "Application identified", parsed.values.json !== true, () => selectApplication(selector, deps.paths, deps.runner));
     const matching = rulesForApp(loaded.rules, app);
     if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", app, rules: matching, warnings: loaded.warnings, errors: [] }, true);
     else {
@@ -230,15 +276,15 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 0;
   }
   const command = parsed.positionals[0];
-  if (!command) return interactive(deps);
+  if (!command) return interactive(deps, { confirm: parsed.values.confirm, assumeYes: parsed.values.yes === true });
   switch (command) {
     case "list": return commandList(deps, parsed.values.json === true);
-    case "scan": return commandScan(deps, parsed.positionals[1], parsed.values.json === true, parsed.values["no-deep"] !== true);
+    case "scan": return commandScan(deps, parsed.positionals[1], parsed);
     case "uninstall": return commandUninstall(deps, parsed);
     case "history": return commandHistory(deps, parsed.values.json === true);
     case "restore": return commandRestore(deps, parsed);
     case "purge": return commandPurge(deps, parsed);
-    case "verify": return commandVerify(deps, parsed.positionals[1], parsed.values.json === true, parsed.values["no-deep"] !== true);
+    case "verify": return commandVerify(deps, parsed);
     case "doctor": return commandDoctor(deps, parsed.values.json === true);
     case "rules": return commandRules(deps, parsed);
     case "help": printHelp(); return 0;
