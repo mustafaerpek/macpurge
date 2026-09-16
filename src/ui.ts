@@ -222,6 +222,11 @@ export function printNextSteps(sessionId: string, displayName: string): void {
   console.log(`\n${pc.dim("Next:")} ${pc.cyan(`macpurge verify "${displayName}"`)} ${pc.dim("·")} ${pc.cyan(`macpurge restore ${sessionId}`)} ${pc.dim("·")} ${pc.cyan(`macpurge purge ${sessionId}`)}`);
 }
 
+export function printPartialGuidance(sessionId: string): void {
+  console.log(`\n${pc.yellow("Some items could not be moved.")} ${pc.dim("Common causes: root-owned app bundles need sudo, sandbox containers carry a macOS privacy lock (com.apple.macl) that even the owner cannot move.")}`);
+  console.log(`${pc.dim("Moved items are safe in quarantine. To finish:")} ${pc.cyan(`macpurge restore ${sessionId}`)} ${pc.dim("puts them back, then retry with")} ${pc.cyan("sudo -v")} ${pc.dim("first, or exclude the locked paths.")}`);
+}
+
 export function printApplicationList(apps: AppIdentity[]): void {
   printBanner(`${apps.length} applications discovered on this Mac.`);
   printSection("Applications", "name · version · source");

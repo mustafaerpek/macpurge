@@ -151,10 +151,18 @@ export function assertQuarantinePath(path: string, paths: SystemPaths): string {
 export async function parentNeedsAdmin(path: string): Promise<boolean> {
   try {
     await access(dirname(path), constants.W_OK);
-    return false;
   } catch {
     return true;
   }
+  // Writable parent is not enough: renaming a root-owned entry out of a
+  // system directory (or into one) still requires privilege on macOS.
+  try {
+    const info = await lstat(path);
+    if (info.uid === 0 && process.getuid?.() !== 0) return true;
+  } catch {
+    // Stat failure is handled by the caller (ENOENT skip, EACCES protected).
+  }
+  return false;
 }
 
 export { isWithin };

@@ -5,6 +5,18 @@ import type { Candidate, CandidateKind, Evidence, RiskClass } from "./types";
 import { fileTypeOf, parentNeedsAdmin } from "./safety";
 import type { CommandRunner } from "./command";
 
+export async function hasMaclLock(path: string, runner: CommandRunner | null): Promise<boolean> {
+  if (runner) {
+    const result = await runner.run(["/bin/ls", "-lO", path]);
+    if (result.exitCode === 0) return result.stdout.includes("com.apple.macl");
+    return false;
+  }
+  const proc = Bun.spawn({ cmd: ["/bin/ls", "-l@", path], stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const [exitCode, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+  if (exitCode !== 0) return false;
+  return stdout.includes("com.apple.macl");
+}
+
 export async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -32,6 +44,7 @@ export async function makeCandidate(input: {
   risk: RiskClass;
   evidence: Evidence[];
   runner: CommandRunner;
+  checkMacl?: boolean;
 }): Promise<Candidate | undefined> {
   const protectedCandidate = (
     detail: string,
@@ -76,6 +89,15 @@ export async function makeCandidate(input: {
     throw error;
   }
   const requiresAdmin = await parentNeedsAdmin(input.path);
+  if (input.checkMacl && (input.kind === "container" || input.path.includes("/Containers/"))) {
+    try {
+      if (await hasMaclLock(input.path, input.runner)) {
+        return protectedCandidate("Sandbox container carries a com.apple.macl privacy lock; even the owner cannot move it");
+      }
+    } catch {
+      // MACL probe failure must not block the scan; the move will surface it.
+    }
+  }
   return {
     id: candidateId(input.path, input.kind),
     path: input.path,

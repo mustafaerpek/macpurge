@@ -37,6 +37,7 @@ import {
   printHistory,
   printKeyValue,
   printNextSteps,
+  printPartialGuidance,
   printScanReport,
   printSection,
   printSessionReport,
@@ -125,7 +126,8 @@ async function commandUninstall(deps: CliDeps, parsed: Parsed): Promise<number> 
   if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
   else {
     printSessionReport(manifest);
-    printNextSteps(manifest.id, manifest.app.displayName);
+    if (manifest.status === "partial") printPartialGuidance(manifest.id);
+    else printNextSteps(manifest.id, manifest.app.displayName);
   }
   return manifest.status === "quarantined" ? 0 : 4;
 }
@@ -291,12 +293,30 @@ async function commandPurge(deps: CliDeps, parsed: Parsed): Promise<number> {
   if (!raw) throw new CliError("purge requires a session id (or 'latest')", 2);
   const id = await deps.quarantine.store.resolve(raw);
   const existing = await deps.quarantine.store.load(id);
-  if (parsed.values["dry-run"]) {
+  if (existing.status === "partial" && !parsed.values["dry-run"]) {
+    const unmoved = existing.items.filter((item) => item.status !== "moved" && item.status !== "purged");
     if (parsed.values.json) {
-      output({ schemaVersion: SCHEMA_VERSION, status: existing.status, app: existing.app, sessionId: id, itemCount: existing.items.length, deferredActions: existing.deferredActions, dryRun: true, warnings: existing.warnings, errors: existing.errors }, true);
+      output({ schemaVersion: SCHEMA_VERSION, status: existing.status, app: existing.app, sessionId: id, unmoved: unmoved.map((item) => ({ path: item.originalPath, error: item.error })), warnings: existing.warnings, errors: existing.errors }, true);
     } else {
       printSessionReport(existing);
-      printSuccess(`Dry run complete · ${existing.items.length} item(s) would be permanently deleted.`);
+      printWarning(`${unmoved.length} item(s) never reached quarantine and cannot be purged.`);
+      for (const item of unmoved.slice(0, 5)) printError(`${item.originalPath}: ${item.error ?? "not moved"}`);
+      printPartialGuidance(id);
+    }
+    throw new CliError("A partial session with unmoved items must be restored or repaired before purge", 4);
+  }
+  if (parsed.values["dry-run"]) {
+    if (parsed.values.json) {
+      const unmovedDry = existing.status === "partial" ? existing.items.filter((item) => item.status !== "moved" && item.status !== "purged") : [];
+      output({ schemaVersion: SCHEMA_VERSION, status: existing.status, app: existing.app, sessionId: id, itemCount: existing.items.length, unmoved: unmovedDry.map((item) => ({ path: item.originalPath, error: item.error })), deferredActions: existing.deferredActions, dryRun: true, warnings: existing.warnings, errors: existing.errors }, true);
+    } else {
+      printSessionReport(existing);
+      if (existing.status === "partial") {
+        printWarning("This session is partial: unmoved items would block a real purge. Restore first, then retry.");
+        printPartialGuidance(id);
+      } else {
+        printSuccess(`Dry run complete · ${existing.items.length} item(s) would be permanently deleted.`);
+      }
     }
     return 0;
   }

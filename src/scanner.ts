@@ -71,7 +71,7 @@ async function materializeCandidates(map: Map<string, PlannedCandidate>, runner:
       const index = next++;
       if (index >= entries.length) return;
       const [path, planned] = entries[index]!;
-      results[index] = await makeCandidate({ path, kind: planned.kind, risk: planned.risk, evidence: planned.evidence, runner });
+      results[index] = await makeCandidate({ path, kind: planned.kind, risk: planned.risk, evidence: planned.evidence, runner, checkMacl: true });
     }
   });
   await Promise.all(workers);
