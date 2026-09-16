@@ -27,7 +27,7 @@ macpurge combines deep discovery with a deliberately conservative mutation model
 
 - **Evidence before action** — every candidate records why it matched.
 - **Three risk classes** — confirmed, review, and protected paths are visually distinct.
-- **Quarantine first** — normal uninstall operations move files instead of deleting them.
+- **Quarantine first** — normal uninstall and clean operations move files instead of deleting them.
 - **Explicit permanence** — irreversible cleanup happens only through a separate `purge` command.
 - **No surprise selection** — possible matches are never selected automatically.
 - **Local by design** — no network requests, telemetry, analytics, or auto-updater.
@@ -93,6 +93,14 @@ macpurge uninstall "Visual Studio Code" --dry-run
 macpurge uninstall "Visual Studio Code"
 ```
 
+Or reclaim safe space without touching any installed app:
+
+```bash
+macpurge clean --dry-run --summary
+macpurge clean --category user-caches --category user-logs --yes
+macpurge clean --whitelist ~/Library/Caches/com.example.keep
+```
+
 After quarantine, every mutating command prints copy-paste recovery choices:
 
 ```bash
@@ -109,6 +117,7 @@ macpurge verify "Example"   # Rescan for remaining files
 | `macpurge list [--json]` | List discovered applications and install sources | No |
 | `macpurge scan <selector> [--json] [--no-deep] [--summary]` | Find and classify related files | No |
 | `macpurge uninstall <selector> [options]` | Move selected candidates into quarantine | Yes |
+| `macpurge clean [options]` | Review safe caches, logs, trash, and orphaned leftovers | Yes |
 | `macpurge history [--json]` | Display recorded sessions and states | No |
 | `macpurge restore <session\|latest> [options]` | Restore quarantined files to their original paths | Yes |
 | `macpurge purge <session\|latest> [options]` | Run deferred cleanup and permanently delete one quarantine | Yes, irreversible |
@@ -122,10 +131,13 @@ macpurge verify "Example"   # Rescan for remaining files
 | --- | --- |
 | `--json` | Emit the stable machine-readable envelope without ANSI formatting |
 | `--no-deep` | Skip the bounded filesystem-name scan |
-| `--dry-run` | Preview `uninstall` or `purge` without moving or deleting anything |
+| `--dry-run` | Preview `uninstall`, `clean`, or `purge` without moving or deleting anything |
 | `--yes`, `-y` | Skip typed and process confirmations (scripts and interactive runs) |
 | `--include <candidate-id>` | Explicitly include one review candidate; may be repeated |
 | `--include-possible` | Quarantine every review candidate without listing IDs |
+| `--category <id>` | Clean only these categories; repeatable (`trash`, `user-caches`, `user-logs`, `browser-caches`, `xcode-derived-data`, `dev-caches`, `orphaned-leftovers`) |
+| `--all-categories` | Include orphaned leftovers in clean (off by default) |
+| `--whitelist <path\|id>` | Never offer this path or category in future clean scans |
 | `--summary` | Show counts instead of the full file list |
 | `--confirm <exact-value>` | Supply the exact confirmation in non-interactive use |
 | `--help`, `-h` | Show the command guide |
@@ -206,6 +218,24 @@ planned → quarantining → quarantined → restored
                          └────────────→ purging → purged
               failures may produce partial or failed
 ```
+
+## What gets cleaned?
+
+`macpurge clean` is the no-app-needed counterpart to `uninstall`. It scans bounded, regenerable locations and quarantines what you approve—same transaction model, same `restore` path:
+
+| Category | Default | What it covers |
+| --- | :---: | --- |
+| `trash` | Selected | Contents of `~/.Trash` |
+| `user-caches` | Selected | Per-app directories in `~/Library/Caches` |
+| `user-logs` | Selected | `~/Library/Logs` entries and diagnostic reports |
+| `browser-caches` | Selected | Cache leaves (`Cache`, `GPUCache`, `Code Cache`, …) under browser vendors—profiles untouched |
+| `xcode-derived-data` | Selected | Per-project `DerivedData` build products and indexes |
+| `dev-caches` | Selected | Regenerable tool caches (`~/.npm`, `~/.bun`, `~/.cache/*`)—never `node_modules`, `Pods`, `venv` |
+| `orphaned-leftovers` | Opt-in | Bundle-style `Application Support` directories with no installed owner (`--all-categories` or `--category`) |
+
+Hard never-delete rules apply to every scan: local model stores (`~/.ollama`, `~/.cache/huggingface`), AI chat and memory directories (`.codex/sessions`, `.claude/projects`, `.grok/sessions`), dependency trees anywhere in the tree, and cache-named system stores such as `com.apple.e5rt.e5bundlecache`. Anything matching is silently excluded—never offered, never counted.
+
+`clean --whitelist <path|category-id>` persists to `~/.config/macpurge/clean-whitelist.json` (`0600`). Whitelisted entries are reported as warnings and skipped on every future scan.
 
 ## What gets scanned?
 
@@ -330,6 +360,7 @@ Built-in profiles currently cover Visual Studio Code and Floodtide. General bund
 src/
 ├── app-policy.ts       canonical Apple/bundle/display/keychain policy
 ├── apps.ts             application discovery and identity
+├── clean.ts            system-wide cleanup categories and whitelist
 ├── cli.ts              thin routing plus runCli/default deps
 ├── cli-helpers.ts      shared CLI parsing, confirmations, and selection
 ├── command.ts          shell-free Bun.spawn command runner
@@ -363,6 +394,7 @@ The suite uses temporary fake macOS roots and command-runner doubles. It does no
 - ambiguous selectors and multiple same-name applications
 - fuzzy selectors with suggestions on misses
 - short session IDs and `latest` resolution
+- clean category scans, whitelist persistence, and never-delete guards
 - VS Code-style data, extensions, CLI links, and updater files
 - protection of project `.vscode` directories
 - ambiguous copies under another application's data

@@ -5,6 +5,7 @@ import type { SystemPaths } from "./types";
 export function defaultSystemPaths(): SystemPaths {
   const home = homedir();
   const supportRoot = join(home, "Library", "Application Support", "macpurge");
+  const configRoot = join(home, ".config", "macpurge");
   return {
     home,
     applications: "/Applications",
@@ -15,7 +16,8 @@ export function defaultSystemPaths(): SystemPaths {
     supportRoot,
     quarantineRoot: join(supportRoot, "quarantine"),
     sessionRoot: join(supportRoot, "sessions"),
-    userRuleRoot: join(home, ".config", "macpurge", "rules"),
+    userRuleRoot: join(configRoot, "rules"),
+    cleanWhitelistPath: join(configRoot, "clean-whitelist.json"),
     binRoots: ["/usr/local/bin", "/opt/homebrew/bin", join(home, ".bun", "bin")],
   };
 }

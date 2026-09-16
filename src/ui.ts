@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { humanBytes } from "./fs-utils";
 import { isProtectedAppleApp } from "./app-policy";
 import { APP_VERSION } from "./version";
-import type { AppIdentity, Candidate, DeferredAction, InstallSource, ScanResult, SessionManifest } from "./types";
+import type { AppIdentity, Candidate, CleanItem, CleanResult, DeferredAction, InstallSource, ScanResult, SessionManifest } from "./types";
 
 const MIN_WIDTH = 62;
 const MAX_WIDTH = 96;
@@ -157,6 +157,40 @@ export function printDeferred(actions: DeferredAction[]): void {
   for (const action of actions) console.log(`  ${pc.magenta("◇")} ${action.description}`);
 }
 
+export function printCleanReport(result: CleanResult, options: { summaryOnly?: boolean } = {}): void {
+  printBanner("Reclaim space. Keep what matters.");
+  const totalBytes = result.items.reduce((sum, item) => sum + item.sizeBytes, 0);
+  printSection("Cleanup plan", `${result.items.length} items · ${humanBytes(totalBytes)}`);
+  for (const category of result.categories) {
+    if (category.itemCount === 0) continue;
+    printSection(category.title, `${category.itemCount} items · ${humanBytes(category.totalBytes)} · ${category.description}`);
+    if (!options.summaryOnly) {
+      for (const item of result.items.filter((entry) => entry.category === category.id)) {
+        printCleanItem(item);
+      }
+    }
+  }
+  if (result.items.length === 0) {
+    printSection("Nothing found");
+    console.log(`  ${pc.green("✓")} No cleanup candidates matched this Mac.`);
+  }
+  for (const warning of result.warnings) printWarning(warning);
+  for (const error of result.errors) printError(error);
+}
+
+export function printCleanItem(item: CleanItem): void {
+  const size = pad(humanBytes(item.sizeBytes), 9);
+  const maxPath = width() - 8;
+  const marker = item.risk === "possible" ? pc.yellow("◐") : pc.green("●");
+  console.log(`  ${marker} ${pc.dim(size)} ${shorten(item.path, maxPath)}`);
+  console.log(`    ${pc.dim(item.categoryTitle)}  ${pc.dim(item.kind)}  ${pc.dim(`#${item.id}`)}`);
+}
+
+export function cleanCategoryLabel(title: string, count: number, bytes: number, selected: boolean): string {
+  const box = selected ? pc.green("●") : pc.dim("○");
+  return `${box} ${title}  ${pc.dim(`${count} · ${humanBytes(bytes)}`)}`;
+}
+
 export function printSessionReport(manifest: SessionManifest): void {
   printBanner("Quarantine gives you a way back.");
   printSection("Operation result", statusVisual(manifest.status));
@@ -249,6 +283,7 @@ export function printHelp(): void {
     ["macpurge list", "Browse installed applications"],
     ["macpurge scan <app>", "Inspect files without changing anything"],
     ["macpurge uninstall <app>", "Move confirmed files into quarantine"],
+    ["macpurge clean", "Review safe caches, logs, and leftovers"],
     ["macpurge history", "Review previous sessions"],
     ["macpurge restore <session|latest>", "Put quarantined files back"],
     ["macpurge purge <session|latest>", "Permanently remove one quarantine"],
@@ -262,13 +297,17 @@ export function printHelp(): void {
   printSection("Selection");
   console.log(`  ${pc.dim("App selectors accept a path, bundle id, or a fuzzy name (e.g. 'vscode'). Apple apps stay protected.")}`);
   console.log(`  ${pc.dim("Sessions accept a full id, a unique short prefix, or 'latest'.")}`);
+  console.log(`  ${pc.dim("Clean accepts --category <id> (repeatable) or --all-categories for orphans too.")}`);
   printSection("Options");
   const options = [
     ["--yes, -y", "Skip typed + process confirmations (scripts)"],
     ["--confirm <text>", "Non-interactive typed confirmation"],
     ["--include <id>", "Also quarantine one possible item (repeatable)"],
     ["--include-possible", "Quarantine every possible item"],
-    ["--dry-run", "Preview uninstall or purge without changing anything"],
+    ["--category <id>", "Clean only these categories (repeatable)"],
+    ["--all-categories", "Include orphaned leftovers in clean"],
+    ["--whitelist <path|id>", "Never offer this path or category again"],
+    ["--dry-run", "Preview uninstall, clean, or purge without changing anything"],
     ["--summary", "Show counts instead of the full file list"],
     ["--no-deep", "Skip the bounded filesystem sweep"],
     ["--json", "Stable machine output"],

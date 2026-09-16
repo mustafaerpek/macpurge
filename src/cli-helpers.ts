@@ -29,6 +29,9 @@ export interface Parsed {
     summary?: boolean;
     include?: string[];
     "include-possible"?: boolean;
+    category?: string[];
+    "all-categories"?: boolean;
+    whitelist?: string | boolean;
     confirm?: string;
   };
 }
@@ -48,6 +51,9 @@ export function parse(argv: string[]): Parsed {
       summary: { type: "boolean" },
       include: { type: "string", multiple: true },
       "include-possible": { type: "boolean" },
+      category: { type: "string", multiple: true },
+      "all-categories": { type: "boolean" },
+      whitelist: { type: "string" },
       confirm: { type: "string" },
     },
   });

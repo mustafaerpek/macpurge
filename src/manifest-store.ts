@@ -104,7 +104,7 @@ export class ManifestStore {
       throw new SafetyError("Session application identity is invalid");
     }
     if (typeof manifest.app.path !== "string") throw new SafetyError("Session application path is invalid");
-    validateLiteralPath(manifest.app.path, this.paths);
+    if (manifest.app.bundleId !== "macpurge.clean") validateLiteralPath(manifest.app.path, this.paths);
     if (!Array.isArray(manifest.items) || !Array.isArray(manifest.deferredActions) || !Array.isArray(manifest.errors) || !Array.isArray(manifest.warnings)) {
       throw new SafetyError("Session manifest collections are invalid");
     }

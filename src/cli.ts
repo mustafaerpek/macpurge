@@ -8,10 +8,11 @@ import { isProtectedAppleApp } from "./app-policy";
 import { APP_VERSION } from "./version";
 import { loadRules, rulesForApp } from "./rules";
 import { scanApplication } from "./scanner";
+import { addWhitelistCategory, addWhitelistPath, CLEAN_CATEGORIES, cleanIdentity, loadCleanWhitelist, saveCleanWhitelist, scanClean, selectCleanItems } from "./clean";
 import { defaultSystemPaths } from "./system-paths";
 import { closeApplication } from "./processes";
 import { QuarantineService } from "./quarantine";
-import { SCHEMA_VERSION, type AppIdentity, type ScanResult } from "./types";
+import { SCHEMA_VERSION, type AppIdentity, type CleanCategoryId, type ScanResult } from "./types";
 import { interactive } from "./interactive";
 import {
   activity,
@@ -25,8 +26,10 @@ import {
   type Parsed,
 } from "./cli-helpers";
 import {
+  cleanCategoryLabel,
   printApplicationList,
   printBanner,
+  printCleanReport,
   printDoctor,
   printError,
   printHelp,
@@ -124,6 +127,114 @@ async function commandHistory(deps: CliDeps, json: boolean): Promise<number> {
   if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", sessions, warnings: [], errors: [] }, true);
   else printHistory(sessions);
   return 0;
+}
+
+function parseCleanCategories(values: string[] | undefined, includeAll: boolean): CleanCategoryId[] | undefined {
+  const known = new Set(CLEAN_CATEGORIES.map((category) => category.id));
+  if (values !== undefined && values.length > 0) {
+    const ids = values as CleanCategoryId[];
+    for (const id of ids) {
+      if (!known.has(id)) throw new CliError(`Unknown clean category: ${id}. Available: ${[...known].join(", ")}`, 2);
+    }
+    return ids;
+  }
+  if (includeAll) return undefined;
+  return CLEAN_CATEGORIES.filter((category) => category.id !== "orphaned-leftovers").map((category) => category.id);
+}
+
+async function commandCleanWhitelist(deps: CliDeps, raw: string | boolean | undefined, json: boolean): Promise<number> {
+  const value = typeof raw === "string" ? raw : undefined;
+  if (!value) throw new CliError("clean --whitelist needs a path (~/..., /...) or a category id", 2);
+  const whitelist = await loadCleanWhitelist(deps.paths);
+  const known = new Set(CLEAN_CATEGORIES.map((category) => category.id));
+  const updated = known.has(value as CleanCategoryId)
+    ? addWhitelistCategory(whitelist, value as CleanCategoryId)
+    : addWhitelistPath(whitelist, value);
+  await saveCleanWhitelist(deps.paths, updated);
+  const message = `Whitelisted ${value}. It will be skipped by future clean scans.`;
+  if (json) output({ schemaVersion: SCHEMA_VERSION, status: "ok", whitelist: updated, warnings: [], errors: [] }, true);
+  else {
+    printBanner("This stays out of your way from now on.");
+    printSection("Whitelist", message);
+    printKeyValue("Categories", updated.categories.join(", ") || "—");
+    printKeyValue("Paths", String(updated.paths.length));
+  }
+  return 0;
+}
+
+async function commandClean(deps: CliDeps, parsed: Parsed): Promise<number> {
+  if (parsed.values.whitelist !== undefined) {
+    return commandCleanWhitelist(deps, parsed.values.whitelist, parsed.values.json === true);
+  }
+  const json = parsed.values.json === true;
+  const rich = !json;
+  const assumeYes = parsed.values.yes === true;
+  const categories = parseCleanCategories(parsed.values.category, parsed.values["all-categories"] === true);
+  const result = await activity("Scanning caches, logs, trash, and leftovers", "Cleanup scan complete", rich, () =>
+    scanClean(deps.paths, deps.runner, categories === undefined ? {} : { categories }),
+  );
+  const selected = selectCleanItems(result.items, categories ?? result.categories.map((category) => category.id), parsed.values.include ?? []);
+  if (selected.length === 0) {
+    if (json) output({ ...result, selectedItemIds: [], dryRun: parsed.values["dry-run"] === true }, true);
+    else {
+      printCleanReport(result, { summaryOnly: parsed.values.summary === true });
+      printSuccess("Nothing to clean · no candidates matched.");
+    }
+    return 0;
+  }
+  if (parsed.values["dry-run"]) {
+    if (json) output({ ...result, selectedItemIds: selected.map((item) => item.id), dryRun: true }, true);
+    else {
+      printCleanReport({ ...result, items: selected }, { summaryOnly: parsed.values.summary === true });
+      printSuccess(`Dry run complete · ${selected.length} item(s) would enter quarantine.`);
+    }
+    return 0;
+  }
+  if (rich && !assumeYes) {
+    const prompts = await import("@clack/prompts");
+    printCleanReport(result, { summaryOnly: true });
+    const picked = await prompts.multiselect({
+      message: "Select cleanup categories",
+      options: result.categories.filter((category) => category.itemCount > 0).map((category) => ({
+        value: category.id,
+        label: cleanCategoryLabel(category.title, category.itemCount, category.totalBytes, category.selectedByDefault),
+        hint: category.description,
+      })),
+      initialValues: result.categories.filter((category) => category.selectedByDefault && category.itemCount > 0).map((category) => category.id),
+      required: false,
+    });
+    if (prompts.isCancel(picked)) {
+      prompts.cancel("Cancelled. No changes were made.");
+      return 3;
+    }
+    const enabled = new Set((picked as string[]).map(String));
+    const rescoped = selected.filter((item) => enabled.has(item.category));
+    if (rescoped.length === 0) throw new CliError("Nothing selected: no cleanup categories were chosen", 5);
+    return quarantineClean(deps, parsed, result, rescoped, assumeYes);
+  }
+  return quarantineClean(deps, parsed, result, selected, assumeYes);
+}
+
+async function quarantineClean(
+  deps: CliDeps,
+  parsed: Parsed,
+  result: import("./types").CleanResult,
+  selected: import("./types").CleanItem[],
+  assumeYes: boolean,
+): Promise<number> {
+  const rich = parsed.values.json !== true;
+  if (rich) printCleanReport({ ...result, items: selected }, { summaryOnly: parsed.values.summary === true });
+  await typedConfirmation("System Cleanup", mutationConfirmation(parsed, "System Cleanup"));
+  void assumeYes;
+  const manifest = await activity("Moving cleanup candidates into quarantine", "Quarantine transaction complete", rich, () =>
+    deps.quarantine.quarantine(cleanIdentity(), selected, []),
+  );
+  if (parsed.values.json) output({ schemaVersion: SCHEMA_VERSION, status: manifest.status, app: manifest.app, sessionId: manifest.id, warnings: manifest.warnings, errors: manifest.errors }, true);
+  else {
+    printSessionReport(manifest);
+    printNextSteps(manifest.id, manifest.app.displayName);
+  }
+  return manifest.status === "quarantined" ? 0 : 4;
 }
 
 async function commandRestore(deps: CliDeps, parsed: Parsed): Promise<number> {
@@ -281,6 +392,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     case "list": return commandList(deps, parsed.values.json === true);
     case "scan": return commandScan(deps, parsed.positionals[1], parsed);
     case "uninstall": return commandUninstall(deps, parsed);
+    case "clean": return commandClean(deps, parsed);
     case "history": return commandHistory(deps, parsed.values.json === true);
     case "restore": return commandRestore(deps, parsed);
     case "purge": return commandPurge(deps, parsed);

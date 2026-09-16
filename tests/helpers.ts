@@ -19,6 +19,7 @@ export async function testPaths(): Promise<SystemPaths> {
     quarantineRoot: join(supportRoot, "quarantine"),
     sessionRoot: join(supportRoot, "sessions"),
     userRuleRoot: join(home, ".config", "macpurge", "rules"),
+    cleanWhitelistPath: join(home, ".config", "macpurge", "clean-whitelist.json"),
     binRoots: [join(root, "usr", "local", "bin"), join(root, "opt", "homebrew", "bin"), join(home, ".bun", "bin")],
   };
   await Promise.all([

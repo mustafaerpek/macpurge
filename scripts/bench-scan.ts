@@ -62,6 +62,7 @@ async function buildFixture(fileCount: number): Promise<{ paths: SystemPaths; ap
     quarantineRoot: join(userLibrary, "Application Support", "macpurge", "quarantine"),
     sessionRoot: join(userLibrary, "Application Support", "macpurge", "sessions"),
     userRuleRoot: join(home, ".config", "macpurge", "rules"),
+    cleanWhitelistPath: join(home, ".config", "macpurge", "clean-whitelist.json"),
     binRoots: [join(root, "usr", "local", "bin")],
   };
   const appPath = join(paths.applications, "Bench.app");

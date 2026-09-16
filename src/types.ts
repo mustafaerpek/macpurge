@@ -31,7 +31,7 @@ export interface AppIdentity {
 }
 
 export interface Evidence {
-  source: "identity" | "standard-path" | "spotlight" | "deep-scan" | "symlink" | "rule" | "receipt";
+  source: "identity" | "standard-path" | "spotlight" | "deep-scan" | "symlink" | "rule" | "receipt" | "clean-scan";
   detail: string;
 }
 
@@ -125,6 +125,36 @@ export interface RuleProfile {
   origin: "builtin" | "user";
 }
 
+export type CleanCategoryId =
+  | "trash"
+  | "user-caches"
+  | "user-logs"
+  | "browser-caches"
+  | "xcode-derived-data"
+  | "dev-caches"
+  | "orphaned-leftovers";
+
+export interface CleanCategory {
+  id: CleanCategoryId;
+  title: string;
+  description: string;
+  selectedByDefault: boolean;
+}
+
+export interface CleanItem extends Candidate {
+  category: CleanCategoryId;
+  categoryTitle: string;
+}
+
+export interface CleanResult {
+  schemaVersion: typeof SCHEMA_VERSION;
+  status: "clean" | "found";
+  categories: Array<CleanCategory & { itemCount: number; totalBytes: number }>;
+  items: CleanItem[];
+  warnings: string[];
+  errors: string[];
+}
+
 export interface SystemPaths {
   home: string;
   applications: string;
@@ -136,5 +166,6 @@ export interface SystemPaths {
   quarantineRoot: string;
   sessionRoot: string;
   userRuleRoot: string;
+  cleanWhitelistPath: string;
   binRoots: string[];
 }
