@@ -35,11 +35,12 @@ categories quarantine through the existing transaction model, so every
   identity (`macpurge.clean`); `history`, `restore latest`, and
   `purge latest` all work unchanged.
 
+## [0.2.4] — 2026-09-16
+
 ### Fixed
 
-- Root-owned bundles (e.g. `/Applications/Developer.app`) now route
-  through sudo: `parentNeedsAdmin` checks entry ownership, not just
-  parent writability.
+- Root-owned bundles route through sudo: `parentNeedsAdmin` checks entry
+  ownership, not just parent writability.
 - Sandbox containers with a `com.apple.macl` lock (or an unlistable
   `Data/` dir) scan as `protected` with an explicit reason instead of
   failing mid-quarantine with `EPERM`.
@@ -49,8 +50,38 @@ categories quarantine through the existing transaction model, so every
 - Partial sessions print causes plus recovery steps; `purge --dry-run`
   previews instead of erroring twice.
 
+## [0.2.3] — 2026-09-16
+
+### Added — `macpurge clean` (first cut)
+
+- Seven bounded categories (trash, user caches/logs, browser caches,
+  Xcode DerivedData, dev caches, opt-in orphaned leftovers) quarantine
+  through the existing transaction model.
+- Hard never-delete guards for model stores, AI chat dirs, dependency
+  trees, and `com.apple.e5rt.e5bundlecache`.
+- Whitelist at `~/.config/macpurge/clean-whitelist.json`.
+- Trash inventoried through Finder (`EPERM`-safe) and emptied
+  permanently via Finder.
+
+## [0.2.2] — 2026-09-16
+
+### Fixed
+
+- Interactive picker shows app size and install source inline on every
+  row. Full browseable list restored with fuzzy filtering — no more
+  focused-row-only hints.
+
+## [0.2.1] — 2026-09-16
+
+### Added — frictionless uninstall UX
+
+- Fuzzy app selectors with suggestions, short-id/`latest` session
+  aliases, `--yes`/`--confirm` everywhere, `--include-possible`,
+  `--summary`, purge confirms the app name with a `--dry-run` preview,
+  single-inventory interactive flow with next-step hints.
+
 ## [0.2.0] — 2026-09-05
 
 Safety-first reversible macOS uninstaller: evidence-based scan,
 confirmed/possible/protected classification, quarantine-first mutations,
-deferred purge actions, fuzzy selectors, session aliases, JSON envelopes.
+deferred purge actions, stable JSON envelopes.
