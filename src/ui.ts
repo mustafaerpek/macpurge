@@ -282,12 +282,21 @@ export function printHelp(): void {
   console.log(`  ${pc.dim("○")} Protected paths can never be selected.`);
 }
 
-export function appChoiceLabel(app: AppIdentity): string {
-  return isProtectedAppleApp(app) ? pc.dim(app.displayName) : pc.bold(app.displayName);
+export function appChoiceLabel(app: AppIdentity, sizeBytes?: number): string {
+  const size = sizeBytes === undefined || sizeBytes <= 0 ? "—" : humanBytes(sizeBytes);
+  const meta = `${size} · ${shortSource(app.installSource)}${isProtectedAppleApp(app) ? " · protected" : ""}`;
+  const name = isProtectedAppleApp(app) ? pc.dim(app.displayName) : pc.bold(app.displayName);
+  return `${name} ${pc.dim(`(${meta})`)}`;
 }
 
-export function appChoiceHint(app: AppIdentity): string {
-  return `${app.version ?? "version unknown"} · ${sourceLabel(app.installSource)}${isProtectedAppleApp(app) ? " · protected" : ""}`;
+function shortSource(source: InstallSource): string {
+  switch (source) {
+    case "homebrew": return "Homebrew";
+    case "app-store": return "App Store";
+    case "pkg": return "PKG";
+    case "standalone": return "Standalone";
+    default: return "Unknown";
+  }
 }
 
 export function sessionOutro(manifest: SessionManifest): string {

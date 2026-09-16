@@ -1,11 +1,17 @@
-import { autocomplete, cancel, confirm, intro, isCancel, multiselect, note, outro } from "@clack/prompts";
-import { listApplications, selectApplication } from "./apps";
-import { humanBytes } from "./fs-utils";
+import { cancel, confirm, intro, isCancel, multiselect, note, outro, select, text } from "@clack/prompts";
+import { listApplications, scoreMatch, selectApplication } from "./apps";
+import { diskUsage, humanBytes } from "./fs-utils";
 import { isProtectedAppleApp } from "./app-policy";
 import { scanApplication } from "./scanner";
 import { closeApplication } from "./processes";
 import { activity, forceConfirmer, selectedCandidates, typedConfirmation, CliError, type CliDeps } from "./cli-helpers";
-import { appChoiceHint, appChoiceLabel, candidateChoiceLabel, printBanner, printRiskSummary, printScanReport, sessionOutro } from "./ui";
+import { appChoiceLabel, candidateChoiceLabel, printBanner, printRiskSummary, printScanReport, sessionOutro } from "./ui";
+import type { AppIdentity } from "./types";
+
+function queryScore(app: AppIdentity, needle: string): number {
+  if (!needle.trim()) return 1;
+  return scoreMatch(app, needle);
+}
 
 export async function interactive(deps: CliDeps, options: { confirm?: string | undefined; assumeYes?: boolean } = {}): Promise<number> {
   if (!process.stdin.isTTY) throw new CliError("Interactive mode requires a TTY", 2);
@@ -14,20 +20,35 @@ export async function interactive(deps: CliDeps, options: { confirm?: string | u
   intro("Interactive application removal");
   const apps = await activity("Discovering applications", "Applications ready", true, () => listApplications(deps.paths, deps.runner));
   if (apps.length === 0) throw new CliError("No applications were found in supported local application roots", 1);
-  const selectedPath = await autocomplete({
-    message: "Search for an application",
-    placeholder: "Type an app name…",
-    options: apps.map((app) => ({
-      value: app.path,
-      label: appChoiceLabel(app),
-      hint: appChoiceHint(app),
-      ...(isProtectedAppleApp(app) ? { disabled: true } : {}),
-    })),
+  const sizes = await activity("Measuring application sizes", "Sizes ready", true, async () => {
+    const entries = await Promise.all(apps.map(async (app) => [app.path, await diskUsage(app.path, deps.runner)] as const));
+    return new Map(entries);
   });
-  if (isCancel(selectedPath)) {
+  const keyword = await text({ message: "Search for an application", placeholder: "Type an app name…" });
+  if (isCancel(keyword)) {
     cancel("Cancelled. No changes were made.");
     return 3;
   }
+  const needle = String(keyword ?? "").trim();
+  const ranked = apps
+    .map((app) => ({ app, score: queryScore(app, needle) }))
+    .filter((entry) => !needle || entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.app.displayName.localeCompare(b.app.displayName));
+  if (ranked.length === 0) throw new CliError(`No installed application matches: ${needle || "(empty search)"}`, 2);
+  const shortlist = ranked.slice(0, 10);
+  const picked = await select({
+    message: shortlist.length === 1 ? `One match for "${needle || "all applications"}"` : `Matches for "${needle || "all applications"}"`,
+    options: shortlist.map(({ app }) => ({
+      value: app.path,
+      label: appChoiceLabel(app, sizes.get(app.path)),
+      ...(isProtectedAppleApp(app) ? { disabled: true } : {}),
+    })),
+  });
+  if (isCancel(picked)) {
+    cancel("Cancelled. No changes were made.");
+    return 3;
+  }
+  const selectedPath = String(picked);
   const listed = apps.find((app) => app.path === String(selectedPath));
   const app = listed ?? (await selectApplication(String(selectedPath), deps.paths, deps.runner));
   const scan = await activity("Inspecting files, helpers, receipts, and registrations", "Deep scan complete", true, () => scanApplication(app, deps.paths, deps.runner, true));
