@@ -2,9 +2,9 @@
 
 # ◆ macpurge
 
-### A safety-first, reversible macOS application uninstaller
+### A safety-first, reversible macOS uninstaller and system cleaner
 
-Find the files an app leaves behind, review the evidence, and move verified items into quarantine before anything is permanently removed.
+Find the files an app leaves behind, reclaim safe system space, review the evidence, and move verified items into quarantine before anything is permanently removed.
 
 [![macOS](https://img.shields.io/badge/macOS_27-Apple_Silicon-111827?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Bun](https://img.shields.io/badge/Bun_1.4.1+-TypeScript-f9f1e1?style=for-the-badge&logo=bun&logoColor=111827)](https://bun.sh/)
@@ -29,7 +29,7 @@ macpurge combines deep discovery with a deliberately conservative mutation model
 - **Three risk classes** — confirmed, review, and protected paths are visually distinct.
 - **Quarantine first** — normal uninstall and clean operations move files instead of deleting them.
 - **Explicit permanence** — irreversible cleanup happens only through a separate `purge` command.
-- **No surprise selection** — possible matches are never selected automatically.
+- **No surprise selection** — possible/review matches are never selected automatically; they need an explicit interactive choice, `--include <id>`, or `--include-possible`.
 - **Local by design** — no network requests, telemetry, analytics, or auto-updater.
 - **Automation-friendly** — human-readable terminal output and stable JSON envelopes.
 
@@ -40,9 +40,10 @@ macpurge combines deep discovery with a deliberately conservative mutation model
 | Application discovery | Reads `/Applications` and `~/Applications`, including nested and symlinked bundles |
 | Identity extraction | Collects display name, bundle ID, Team ID, version, path, and install source |
 | Layered scanning | Checks standard Library paths, Spotlight, bounded filesystem matches, CLI links, processes, helpers, and registrations |
+| System-wide cleanup | Scans Trash, user/browser/dev caches, logs, Xcode DerivedData, and orphaned leftovers without touching any installed app |
 | Installer awareness | Detects standalone apps, Homebrew casks, App Store receipts, and PKG receipts |
 | Safety classification | Separates strong ownership evidence from ambiguous or protected paths |
-| Reversible sessions | Stores versioned manifests and moves same-volume files into per-app quarantine sessions |
+| Reversible sessions | Stores versioned manifests and moves same-volume files into per-session quarantine payloads |
 | Controlled cleanup | Defers Keychain, TCC, login item, Homebrew, and package-receipt actions until permanent purge |
 | Restore protection | Never overwrites an existing destination |
 | Extensible rules | Loads declarative JSON profiles without allowing arbitrary command execution |
@@ -62,9 +63,9 @@ Download the latest signed binary from
 [GitHub Releases](https://github.com/mustafaerpek/macpurge/releases):
 
 ```bash
-curl -fsSL -o macpurge https://github.com/mustafaerpek/macpurge/releases/latest/download/macpurge-darwin-arm64
-chmod +x macpurge
-install -m 755 macpurge ~/.bun/bin/macpurge
+curl -fsSL -o macpurge-darwin-arm64 https://github.com/mustafaerpek/macpurge/releases/latest/download/macpurge-darwin-arm64
+chmod +x macpurge-darwin-arm64
+install -m 755 macpurge-darwin-arm64 ~/.bun/bin/macpurge
 ```
 
 Make sure `~/.bun/bin` is available in your `PATH`, then confirm the installation:
@@ -123,6 +124,14 @@ macpurge clean --whitelist-list
 macpurge clean --whitelist-remove user-logs
 macpurge clean --all-categories --include-possible --dry-run
 ```
+
+For non-interactive clean runs, confirm with the fixed phrase `System Cleanup`:
+
+```bash
+macpurge clean --category user-caches --confirm "System Cleanup"
+```
+
+Orphaned leftovers (`possible`, off by default) need `--all-categories`, `--category orphaned-leftovers`, `--include <id>`, or `--include-possible`. Note that Trash is emptied permanently via Finder — it never enters quarantine and cannot be restored.
 
 After quarantine, every mutating command prints copy-paste recovery choices:
 
@@ -200,10 +209,12 @@ The path safety layer rejects, among other cases:
 - project `.vscode` directories
 - personal `Documents`, `Desktop`, and `Downloads` content found by broad matching
 - `/Library/Developer` and Apple system applications
+- sandbox containers carrying a `com.apple.macl` privacy lock (or an unlistable `Data/` directory) — they scan as `protected` instead of failing mid-quarantine
 - symlinks that do not resolve into the selected application
 - quarantine paths belonging to another session
+- macpurge's own support root (quarantine and session data a rule could otherwise destroy)
 
-Every selected path, real path, ownership, symlink target, file type, inode, and filesystem boundary is checked again immediately before mutation. Restore writes additionally verify the symlink-resolved parent directory, so a redirected parent cannot move a file outside the supported roots, and administrator moves use `mv -n` so an existing destination is never overwritten.
+Every selected path, real path, ownership, symlink target, file type, inode, and filesystem boundary is checked again immediately before mutation. Root-owned entries route through `sudo` even when the parent directory is writable. Restore writes additionally verify the symlink-resolved parent directory, so a redirected parent cannot move a file outside the supported roots, and administrator moves use `mv -n` so an existing destination is never overwritten.
 
 ## Quarantine lifecycle
 
@@ -304,6 +315,10 @@ Before quarantine, macpurge detects running processes with the system `pgrep -fl
 
 A process lookup failure is reported as an error and stops the uninstall instead of being misread as "the application is not running."
 
+## Administrator access
+
+Root-owned entries (for example an app bundle installed by another user) route through `sudo` even when the parent directory looks writable. Before the move, macpurge warns that administrator access is needed and asks for approval. The quarantine, restore, and purge spinners stay off during moves so the `sudo` password prompt inherits a clean terminal — approve it in the terminal prompt. Headless runs without a cached credential fail with a hint to run `sudo -v` first, then retry.
+
 ## Non-interactive and JSON use
 
 Mutation commands require exact confirmation when stdin is not a TTY. Purge now confirms the application name (not a raw UUID) after printing the session, and supports `--dry-run` before anything permanent:
@@ -323,6 +338,8 @@ JSON responses contain `schemaVersion`, `status`, `warnings`, and `errors`, plus
 macpurge scan "Example" --json | jq '.candidates[] | select(.risk == "confirmed")'
 ```
 
+Clean JSON adds `categories`, `items`, `selectedItemIds`, and (when Trash is in scope) `trashInventory` with `count`, `names`, and `totalBytes`. Clean mutations also report `trashEmptied`/`trashDetail`, whitelist changes report `added`/`removed`, and partial purge previews list `unmoved` items with their errors.
+
 Exit codes are stable:
 
 | Code | Meaning |
@@ -332,7 +349,7 @@ Exit codes are stable:
 | `2` | Invalid usage or rule |
 | `3` | User cancelled |
 | `4` | Partial operation; review or rollback required |
-| `5` | Verification found residue |
+| `5` | No confirmed candidates found, nothing selected, or verification found residue |
 
 ## Custom rules
 
@@ -393,6 +410,7 @@ src/
 ├── cli.ts              thin routing plus runCli/default deps
 ├── cli-helpers.ts      shared CLI parsing, confirmations, and selection
 ├── command.ts          shell-free Bun.spawn command runner
+├── fs-utils.ts         file identity, sizing, and MACL lock probing
 ├── interactive.ts      guided interactive flow
 ├── manifest-store.ts   atomic session persistence
 ├── processes.ts        verified process matching and quit handling
@@ -463,13 +481,25 @@ This is expected. macpurge does not install a privileged helper or cache its own
 
 Also expected. Without Full Disk Access, macOS denies direct reads of `~/.Trash` even to its owner. macpurge inventories Trash through Finder instead. Grant Full Disk Access to the terminal (System Settings → Privacy & Security → Full Disk Access) for direct reads; Finder empty still works either way.
 
+### Finder asks for Automation permission
+
+Trash inventory and emptying run through Finder via AppleScript. On first use macOS may prompt to allow the terminal to control Finder (System Settings → Privacy & Security → Automation). If denied, Trash shows as unavailable — grant the permission and retry.
+
+### `sudo` asks for a password mid-run
+
+Expected when the plan contains root-owned entries. The spinners stop before the move so the prompt is readable; type the password in the terminal. For scripted runs, cache a credential first with `sudo -v`.
+
 ### Restore reports a destination collision
 
 macpurge will not overwrite the existing path. Move or rename the conflicting file after reviewing it, then retry the restore session.
 
 ### A partial session cannot be purged
 
-Review the manifest and restore the successfully moved files. macpurge blocks permanent purge while the transaction contains unresolved unmoved items.
+Review the manifest and restore the successfully moved files. macpurge blocks permanent purge while the transaction contains unresolved unmoved items. Common causes: root-owned entries without a cached `sudo` credential, or sandbox containers carrying a `com.apple.macl` privacy lock that even the owner cannot move (they scan as `protected` on the next run).
+
+## Releases
+
+Versioned binaries ship from [GitHub Releases](https://github.com/mustafaerpek/macpurge/releases) — every `v*` tag builds, typechecks, tests, and publishes `macpurge-darwin-arm64` plus `SHA256SUMS.txt` via the release workflow. See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Inspiration
 
